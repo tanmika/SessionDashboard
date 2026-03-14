@@ -170,6 +170,11 @@ export const useSessionStore = defineStore('session', () => {
         const session = sessions.value.get(msg.session_id)
         if (session) {
           session.insights.unshift(msg.insight)
+          session.total_insights++
+          // Cap in-memory array to prevent unbounded growth
+          if (session.insights.length > 200) {
+            session.insights.length = 200
+          }
         }
         break
       }

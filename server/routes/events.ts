@@ -39,10 +39,22 @@ export function createEventRoutes(sessionManager: SessionManager): Router {
     res.json({ ok: true, data: session })
   })
 
-  // Get session event timeline
+  // Get session event timeline (supports pagination via ?limit=N&offset=N)
   router.get('/sessions/:id/events', (req, res) => {
-    const events = sessionManager.getSessionEvents(req.params.id)
-    res.json({ ok: true, data: events })
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined
+    const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0
+    const events = sessionManager.getSessionEvents(req.params.id, limit, offset)
+    const total = sessionManager.getSessionEventsCount(req.params.id)
+    res.json({ ok: true, data: events, total })
+  })
+
+  // Get session insights (paginated)
+  router.get('/sessions/:id/insights', (req, res) => {
+    const limit = parseInt((req.query.limit as string) || '100', 10)
+    const offset = parseInt((req.query.offset as string) || '0', 10)
+    const data = sessionManager.getSessionInsights(req.params.id, limit, offset)
+    const total = sessionManager.getSessionInsightsTotal(req.params.id)
+    res.json({ ok: true, data, total })
   })
 
   // Set or clear session alias

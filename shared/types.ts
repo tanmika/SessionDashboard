@@ -110,6 +110,7 @@ export interface Session {
   last_activity: string // ISO timestamp
   created_at: string
   insights: Insight[]
+  total_insights: number  // Real insight count (insights array may be truncated)
   // Custom alias (persisted in DB, overrides generated display_name when set)
   alias: string
   // Watchlist pin (persisted in DB)

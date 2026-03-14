@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { useSessionStore } from '../stores/session'
-import type { SessionEvent } from '../../shared/types'
+import type { SessionEvent, Insight } from '../../shared/types'
 import { formatRelativeTime } from '../utils/time'
 import { renderMarkdown } from '../utils/markdown'
 
 const store = useSessionStore()
+const PAGE_SIZE = 100
 
 // Alias inline edit
 const isEditingAlias = ref(false)
@@ -27,34 +28,98 @@ function cancelAliasEdit() {
   isEditingAlias.value = false
 }
 
-watch(() => store.selectedSessionId, () => {
-  isEditingAlias.value = false
-})
+// ─── Events pagination ───
+
 const events = ref<SessionEvent[]>([])
 const loading = ref(false)
 const loadError = ref(false)
+const totalEvents = ref(0)
+const loadingMoreEvents = ref(false)
+const allEventsLoaded = ref(false)
 
 const insightsExpanded = ref(true)
 const eventsExpanded = ref(true)
 
-// Reverse chronological (newest first)
-const reversedEvents = computed(() => [...events.value].reverse())
+const hasMoreEvents = computed(() =>
+  !allEventsLoaded.value && events.value.length < totalEvents.value
+)
+
+async function loadMoreEvents() {
+  const id = store.selectedSessionId
+  if (!id || loadingMoreEvents.value) return
+  loadingMoreEvents.value = true
+  try {
+    const res = await fetch(`/api/sessions/${id}/events?limit=${PAGE_SIZE}&offset=${events.value.length}`)
+    const json = await res.json()
+    const newEvents = json.data || []
+    events.value.push(...newEvents)
+    if (newEvents.length < PAGE_SIZE) allEventsLoaded.value = true
+  } catch { /* ignore */ }
+  loadingMoreEvents.value = false
+}
+
+// ─── Insights pagination ───
+
+const extraInsights = ref<Insight[]>([])
+const loadingMoreInsights = ref(false)
+const allInsightsLoaded = ref(false)
+
+const displayedInsights = computed(() => {
+  if (!store.selectedSession) return []
+  return [...store.selectedSession.insights, ...extraInsights.value]
+})
+
+const hasMoreInsights = computed(() =>
+  !allInsightsLoaded.value &&
+  store.selectedSession != null &&
+  store.selectedSession.total_insights > displayedInsights.value.length
+)
+
+async function loadMoreInsights() {
+  const id = store.selectedSessionId
+  if (!id || loadingMoreInsights.value) return
+  const offset = displayedInsights.value.length
+  loadingMoreInsights.value = true
+  try {
+    const res = await fetch(`/api/sessions/${id}/insights?limit=${PAGE_SIZE}&offset=${offset}`)
+    const json = await res.json()
+    const newInsights = json.data || []
+    extraInsights.value.push(...newInsights)
+    if (newInsights.length < PAGE_SIZE) allInsightsLoaded.value = true
+  } catch { /* ignore */ }
+  loadingMoreInsights.value = false
+}
+
+// ─── Session change: reset pagination & load events ───
 
 watch(
   () => store.selectedSessionId,
   async (id) => {
-    if (!id) {
-      events.value = []
-      loadError.value = false
-      return
-    }
-    loading.value = true
+    // Reset alias edit
+    isEditingAlias.value = false
+
+    // Reset insights pagination
+    extraInsights.value = []
+    allInsightsLoaded.value = false
+    loadingMoreInsights.value = false
+
+    // Reset events pagination & load first page
+    events.value = []
+    totalEvents.value = 0
+    allEventsLoaded.value = false
+    loadingMoreEvents.value = false
     loadError.value = false
+
+    if (!id) return
+
+    loading.value = true
     try {
-      const res = await fetch(`/api/sessions/${id}/events`)
+      const res = await fetch(`/api/sessions/${id}/events?limit=${PAGE_SIZE}&offset=0`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json()
       events.value = json.data || []
+      totalEvents.value = json.total ?? 0
+      allEventsLoaded.value = events.value.length >= totalEvents.value
     } catch {
       events.value = []
       loadError.value = true
@@ -135,28 +200,31 @@ watch(
       <!-- Insights -->
       <section class="info-section">
         <h3 class="section-header" @click="insightsExpanded = !insightsExpanded">
-          <span>Insights ({{ store.selectedSession.insights.length }})</span>
+          <span>Insights ({{ displayedInsights.length }}{{ store.selectedSession.total_insights > displayedInsights.length ? ` / ${store.selectedSession.total_insights}` : '' }})</span>
           <span class="toggle-icon">{{ insightsExpanded ? '▾' : '▸' }}</span>
         </h3>
         <div v-if="insightsExpanded" class="timeline">
           <div
-            v-for="insight in store.selectedSession.insights"
+            v-for="insight in displayedInsights"
             :key="insight.id"
             class="timeline-item insight-item"
           >
             <span class="timeline-time">{{ formatRelativeTime(insight.timestamp) }}</span>
             <div class="md-content" v-html="renderMarkdown(insight.content)" />
           </div>
-          <div v-if="store.selectedSession.insights.length === 0" class="empty-hint">
+          <div v-if="displayedInsights.length === 0" class="empty-hint">
             No insights yet
           </div>
+          <button v-if="hasMoreInsights" class="load-more-btn" @click="loadMoreInsights" :disabled="loadingMoreInsights">
+            {{ loadingMoreInsights ? '加载中...' : '加载更多' }}
+          </button>
         </div>
       </section>
 
       <!-- Event timeline -->
       <section class="info-section">
         <h3 class="section-header" @click="eventsExpanded = !eventsExpanded">
-          <span>Event Timeline ({{ events.length }})</span>
+          <span>Event Timeline ({{ events.length }}{{ totalEvents > events.length ? ` / ${totalEvents}` : '' }})</span>
           <span class="toggle-icon">{{ eventsExpanded ? '▾' : '▸' }}</span>
         </h3>
         <template v-if="eventsExpanded">
@@ -166,7 +234,7 @@ watch(
           </div>
           <div v-else class="timeline">
             <div
-              v-for="event in reversedEvents"
+              v-for="event in events"
               :key="event.id"
               class="timeline-item event-item"
             >
@@ -178,6 +246,9 @@ watch(
             <div v-if="events.length === 0 && !loading" class="empty-hint">
               No events recorded
             </div>
+            <button v-if="hasMoreEvents" class="load-more-btn" @click="loadMoreEvents" :disabled="loadingMoreEvents">
+              {{ loadingMoreEvents ? '加载中...' : '加载更多' }}
+            </button>
           </div>
         </template>
       </section>
@@ -502,6 +573,28 @@ watch(
   font-size: 13px;
   padding: 4px 8px;
   outline: none;
+}
+
+.load-more-btn {
+  width: 100%;
+  padding: 8px 0;
+  border-radius: 10px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--accent);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.load-more-btn:hover:not(:disabled) {
+  background: rgba(124, 156, 255, 0.08);
+  border-color: rgba(124, 156, 255, 0.3);
+}
+
+.load-more-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .empty-hint {

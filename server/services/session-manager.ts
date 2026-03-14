@@ -43,6 +43,9 @@ export class SessionManager {
   private stmtGetSessions: Database.Statement
   private stmtGetEvents: Database.Statement
   private stmtGetInsights: Database.Statement
+  private stmtGetInsightsPaged: Database.Statement
+  private stmtGetEventsPaged: Database.Statement
+  private stmtGetEventsCount: Database.Statement
 
   constructor(private db: Database.Database) {
     this.transcriptWatcher = new TranscriptWatcher((sessionId, content) => {
@@ -76,14 +79,34 @@ export class SessionManager {
     this.stmtGetInsights = db.prepare(
       'SELECT * FROM insights WHERE session_id = ? ORDER BY timestamp DESC'
     )
+    this.stmtGetInsightsPaged = db.prepare(
+      'SELECT * FROM insights WHERE session_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?'
+    )
+    this.stmtGetEventsPaged = db.prepare(
+      'SELECT * FROM events WHERE session_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?'
+    )
+    this.stmtGetEventsCount = db.prepare(
+      'SELECT COUNT(*) as count FROM events WHERE session_id = ?'
+    )
 
     this.restoreFromDb()
     this.startIdleChecker()
     this.initCodexWatcher()
   }
 
+  private static readonly INSIGHT_PAGE_SIZE = 100
+
   setBroadcast(fn: BroadcastFn) {
     this.broadcast = fn
+  }
+
+  /** Return a copy of the session with insights truncated to the newest page. */
+  private slimSession(session: Session): Session {
+    return {
+      ...session,
+      insights: session.insights.slice(0, SessionManager.INSIGHT_PAGE_SIZE),
+      total_insights: session.insights.length,
+    }
   }
 
   // ─── Restore sessions from SQLite on startup ───
@@ -105,6 +128,7 @@ export class SessionManager {
         source: (row.source as 'claude' | 'codex') ?? 'claude',
         predecessor_id: row.predecessor_id || undefined,
         insights,
+        total_insights: insights.length,
         active_tools: 0,
         active_subagents: 0,
       }
@@ -376,6 +400,7 @@ export class SessionManager {
 
     // Prepend (newest first)
     session.insights.unshift(insight)
+    session.total_insights = session.insights.length
 
     // PRD §10.6: a new transcript insight is a real progress signal — resolve waiting
     if (source === 'transcript' && (session.state === 'waiting_user' || session.state === 'waiting_permission')) {
@@ -391,15 +416,33 @@ export class SessionManager {
   // ─── Queries ───
 
   getAllSessions(): Session[] {
-    return Array.from(this.sessions.values())
+    return Array.from(this.sessions.values()).map(s => this.slimSession(s))
   }
 
   getSession(sessionId: string): Session | undefined {
-    return this.sessions.get(sessionId)
+    const session = this.sessions.get(sessionId)
+    return session ? this.slimSession(session) : undefined
   }
 
-  getSessionEvents(sessionId: string): SessionEvent[] {
+  getSessionEvents(sessionId: string, limit?: number, offset?: number): SessionEvent[] {
+    if (limit != null) {
+      return this.stmtGetEventsPaged.all(sessionId, limit, offset ?? 0) as SessionEvent[]
+    }
     return this.stmtGetEvents.all(sessionId) as SessionEvent[]
+  }
+
+  getSessionEventsCount(sessionId: string): number {
+    const row = this.stmtGetEventsCount.get(sessionId) as { count: number }
+    return row.count
+  }
+
+  getSessionInsights(sessionId: string, limit: number, offset: number): Insight[] {
+    return this.stmtGetInsightsPaged.all(sessionId, limit, offset) as Insight[]
+  }
+
+  getSessionInsightsTotal(sessionId: string): number {
+    const session = this.sessions.get(sessionId)
+    return session ? session.insights.length : 0
   }
 
   getSessionCount(): number {
@@ -413,9 +456,9 @@ export class SessionManager {
     session.alias = alias.trim()
     session.display_name = this.makeDisplayName(session.cwd, sessionId, session.alias)
     this.stmtSetAlias.run(session.alias, sessionId)
-    this.broadcast({ type: 'session_update', data: session })
+    this.broadcast({ type: 'session_update', data: this.slimSession(session) })
 
-    return session
+    return this.slimSession(session)
   }
 
   setSessionPinned(sessionId: string, pinned: boolean): Session | null {
@@ -450,6 +493,7 @@ export class SessionManager {
       pinned: false,
       source,
       insights: [],
+      total_insights: 0,
       active_tools: 0,
       active_subagents: 0,
     }
@@ -482,7 +526,7 @@ export class SessionManager {
       session.transcript_path || '',
       session.session_id
     )
-    this.broadcast({ type: 'session_update', data: session })
+    this.broadcast({ type: 'session_update', data: this.slimSession(session) })
   }
 
   // ─── Session handoff (context-clear auto-inheritance) ───
