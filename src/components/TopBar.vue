@@ -12,6 +12,7 @@ const filters: { label: string; value: SessionState | 'all' | 'needs_attention';
   { label: 'Waiting Permission', value: 'waiting_permission' },
   { label: 'Waiting User', value: 'waiting_user' },
   { label: 'Active', value: 'active' },
+  { label: 'Inactive', value: 'inactive' },
   { label: 'Idle', value: 'idle' },
   { label: 'Ended', value: 'ended' },
 ]

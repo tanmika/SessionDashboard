@@ -24,6 +24,7 @@ function stateColor(state: string): string {
     case 'active': return 'var(--accent)'
     case 'waiting_permission': return 'var(--danger)'
     case 'waiting_user': return '#f5c842'
+    case 'inactive': return 'rgba(148, 163, 184, 0.5)'
     case 'idle': return 'var(--muted)'
     case 'ended': return 'rgba(255,255,255,0.15)'
     default: return 'var(--muted)'

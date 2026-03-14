@@ -23,6 +23,10 @@ const store = useSessionStore()
       <span class="value accent2">{{ store.stateCounts.active }}</span>
     </article>
     <article class="stat">
+      <span class="label">Inactive</span>
+      <span class="value muted">{{ store.stateCounts.inactive }}</span>
+    </article>
+    <article class="stat">
       <span class="label">Idle / Ended</span>
       <span class="value muted">{{ store.stateCounts.idle }} / {{ store.stateCounts.ended }}</span>
     </article>
@@ -32,7 +36,7 @@ const store = useSessionStore()
 <style scoped>
 .stats {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 12px;
 }
 
