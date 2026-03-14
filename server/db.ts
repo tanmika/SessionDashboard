@@ -46,6 +46,10 @@ export function initDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_insights_timestamp ON insights(timestamp);
   `)
 
+  // Safe migration: ADD COLUMN silently no-ops if column already exists (SQLite behavior)
+  try { db.exec(`ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE sessions ADD COLUMN alias TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
+
   return db
 }
 

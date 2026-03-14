@@ -11,7 +11,9 @@
 
 ## 功能特性
 
-- **多列看板视图** — 每个 Claude Code session 独占一列
+- **会话看板（Watchlist）** — 手动将感兴趣的 session 加入看板，只有已 pin 的 session 才显示为列；持久化到 SQLite，重启不丢，多 tab 实时同步
+- **会话别名（Alias）** — 为任意 session 设置自定义名称，方便长期识别；在列头悬浮铅笔图标或详情面板中行内编辑；别名优先于自动生成的 `basename · id` 名称
+- **多列看板视图** — 每个已 pin 的 Claude Code session 独占一列
 - **5 种会话状态** — Active、Waiting Permission、Waiting User、Idle、Ended
 - **实时更新** — WebSocket 推送，自动重连
 - **双 Insight 来源** — Claude Code hooks 事件 + 增量 transcript 解析
@@ -142,13 +144,13 @@ session-dashboard/
 │   ├── setup-hooks.ts        # Hook 安装器（npm run setup:hooks）
 │   └── dev-simulate.sh       # 开发用模拟脚本
 ├── server/
-│   ├── db.ts                 # SQLite 初始化
+│   ├── db.ts                 # SQLite 初始化 + 安全列迁移
 │   ├── index.ts              # Express + HTTP + WebSocket 入口
 │   ├── routes/
-│   │   ├── events.ts         # POST /api/events, GET /api/sessions
+│   │   ├── events.ts         # POST /api/events, GET/PATCH /api/sessions
 │   │   └── hooks.ts          # GET /api/hooks/status
 │   ├── services/
-│   │   ├── session-manager.ts   # 状态机 + Insight 管理
+│   │   ├── session-manager.ts   # 状态机 + Insight / pin / alias 管理
 │   │   └── transcript-watcher.ts # 增量 JSONL 解析
 │   └── ws.ts                 # WebSocket 服务器
 ├── shared/
@@ -158,14 +160,27 @@ session-dashboard/
     │   ├── TopBar.vue
     │   ├── StatsBar.vue
     │   ├── SessionBoard.vue
-    │   ├── SessionColumn.vue
-    │   ├── DetailPanel.vue
+    │   ├── SessionColumn.vue      # 列头悬浮铅笔行内编辑别名
+    │   ├── SessionPicker.vue      # 看板管理面板（pin/unpin）
+    │   ├── DetailPanel.vue        # 详情 + 别名编辑 + 可折叠时间线
     │   └── HooksStatus.vue
     ├── stores/
     │   └── session.ts        # Pinia store + WebSocket 客户端
     └── utils/
         └── time.ts           # 相对时间格式化
 ```
+
+## API 参考
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/api/events` | 接收 Claude Code hook 事件 |
+| `GET` | `/api/sessions` | 获取所有 session |
+| `GET` | `/api/sessions/:id` | 获取单个 session |
+| `GET` | `/api/sessions/:id/events` | 获取事件时间线 |
+| `POST` | `/api/sessions/:id/insights` | 手动添加 insight |
+| `PATCH` | `/api/sessions/:id/pin` | `{ pinned: boolean }` — 加入/移出看板 |
+| `PATCH` | `/api/sessions/:id/alias` | `{ alias: string }` — 设置或清除自定义别名 |
 
 ## 许可证
 

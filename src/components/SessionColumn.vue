@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { Session } from '../../shared/types'
 import { formatRelativeTime } from '../utils/time'
+import { useSessionStore } from '../stores/session'
 
 const props = defineProps<{
   session: Session
@@ -11,6 +12,31 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: []
 }>()
+
+const store = useSessionStore()
+const isEditingAlias = ref(false)
+const editValue = ref('')
+
+function startEdit(e: MouseEvent) {
+  e.stopPropagation()
+  editValue.value = props.session.alias || ''
+  isEditingAlias.value = true
+}
+
+function confirmEdit() {
+  isEditingAlias.value = false
+  store.setAlias(props.session.session_id, editValue.value)
+}
+
+function cancelEdit() {
+  isEditingAlias.value = false
+}
+
+function onEditKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter') confirmEdit()
+  else if (e.key === 'Escape') cancelEdit()
+  e.stopPropagation()
+}
 
 const stateLabel = computed(() => {
   const labels: Record<string, string> = {
@@ -41,7 +67,20 @@ const relativeTime = computed(() => {
     <header class="column-header">
       <div class="column-topline">
         <div class="column-title">
-          <h2>{{ session.display_name }}</h2>
+          <div class="column-name-row">
+            <input
+              v-if="isEditingAlias"
+              class="alias-input"
+              v-model="editValue"
+              @keydown="onEditKeydown"
+              @blur="confirmEdit"
+              @click.stop
+              autofocus
+              placeholder="输入别名…"
+            />
+            <h2 v-else>{{ session.display_name }}</h2>
+            <button v-if="!isEditingAlias" class="alias-edit-btn" @click="startEdit" title="设置别名">✎</button>
+          </div>
           <div class="column-subtitle">{{ session.session_id.slice(0, 8) }}</div>
         </div>
         <span class="status" :class="stateClass">{{ stateLabel }}</span>
@@ -122,6 +161,60 @@ const relativeTime = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.column-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.column-name-row h2 {
+  margin: 0;
+  font-size: 17px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.alias-edit-btn {
+  flex-shrink: 0;
+  opacity: 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 5px;
+  border-radius: 6px;
+  line-height: 1;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.column-header:hover .alias-edit-btn {
+  opacity: 1;
+}
+
+.alias-edit-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.alias-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  padding: 3px 8px;
+  outline: none;
 }
 
 .column-title h2 {

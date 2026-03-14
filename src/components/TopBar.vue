@@ -2,6 +2,7 @@
 import { useSessionStore } from '../stores/session'
 import type { SessionState } from '../../shared/types'
 import HooksStatus from './HooksStatus.vue'
+import SessionPicker from './SessionPicker.vue'
 
 const store = useSessionStore()
 
@@ -32,6 +33,7 @@ const filters: { label: string; value: SessionState | 'all' | 'needs_attention';
           键盘：<code>Q / E</code> 或 <code>← / →</code> 横向移动列
         </div>
         <div class="status-row">
+          <SessionPicker />
           <HooksStatus />
           <div class="connection-status" :class="{ connected: store.wsConnected }">
             {{ store.wsConnected ? 'Connected' : 'Reconnecting...' }}

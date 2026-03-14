@@ -1,13 +1,43 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { useSessionStore } from '../stores/session'
 import type { SessionEvent } from '../../shared/types'
 import { formatRelativeTime } from '../utils/time'
 
 const store = useSessionStore()
+
+// Alias inline edit
+const isEditingAlias = ref(false)
+const aliasEditValue = ref('')
+
+function startAliasEdit() {
+  aliasEditValue.value = store.selectedSession?.alias || ''
+  isEditingAlias.value = true
+}
+
+function confirmAliasEdit() {
+  isEditingAlias.value = false
+  if (store.selectedSession) {
+    store.setAlias(store.selectedSession.session_id, aliasEditValue.value)
+  }
+}
+
+function cancelAliasEdit() {
+  isEditingAlias.value = false
+}
+
+watch(() => store.selectedSessionId, () => {
+  isEditingAlias.value = false
+})
 const events = ref<SessionEvent[]>([])
 const loading = ref(false)
 const loadError = ref(false)
+
+const insightsExpanded = ref(true)
+const eventsExpanded = ref(true)
+
+// Reverse chronological (newest first)
+const reversedEvents = computed(() => [...events.value].reverse())
 
 watch(
   () => store.selectedSessionId,
@@ -46,6 +76,27 @@ watch(
       <section class="info-section">
         <h3>Info</h3>
         <div class="info-grid">
+          <div class="info-item alias-item">
+            <span class="info-label">Alias</span>
+            <div class="alias-row">
+              <input
+                v-if="isEditingAlias"
+                class="alias-input"
+                v-model="aliasEditValue"
+                @keydown.enter="confirmAliasEdit"
+                @keydown.escape="cancelAliasEdit"
+                @blur="confirmAliasEdit"
+                autofocus
+                placeholder="输入别名，回车保存…"
+              />
+              <template v-else>
+                <span class="info-value alias-value" :class="{ placeholder: !store.selectedSession.alias }">
+                  {{ store.selectedSession.alias || '未设置' }}
+                </span>
+                <button class="alias-edit-btn" @click="startAliasEdit">编辑</button>
+              </template>
+            </div>
+          </div>
           <div class="info-item">
             <span class="info-label">Session ID</span>
             <span class="info-value mono">{{ store.selectedSession.session_id }}</span>
@@ -71,8 +122,11 @@ watch(
 
       <!-- Insights -->
       <section class="info-section">
-        <h3>Insights ({{ store.selectedSession.insights.length }})</h3>
-        <div class="timeline">
+        <h3 class="section-header" @click="insightsExpanded = !insightsExpanded">
+          <span>Insights ({{ store.selectedSession.insights.length }})</span>
+          <span class="toggle-icon">{{ insightsExpanded ? '▾' : '▸' }}</span>
+        </h3>
+        <div v-if="insightsExpanded" class="timeline">
           <div
             v-for="insight in store.selectedSession.insights"
             :key="insight.id"
@@ -92,26 +146,31 @@ watch(
 
       <!-- Event timeline -->
       <section class="info-section">
-        <h3>Event Timeline ({{ events.length }})</h3>
-        <div v-if="loading" class="empty-hint">Loading...</div>
-        <div v-else-if="loadError" class="empty-hint error-hint">
-          Failed to load events
-        </div>
-        <div v-else class="timeline">
-          <div
-            v-for="event in events"
-            :key="event.id"
-            class="timeline-item event-item"
-          >
-            <span class="timeline-time">{{ formatRelativeTime(event.timestamp) }}</span>
-            <span class="event-name">{{ event.event_name }}</span>
-            <span v-if="event.tool_name" class="event-detail">tool: {{ event.tool_name }}</span>
-            <span v-if="event.notification_type" class="event-detail">{{ event.notification_type }}</span>
+        <h3 class="section-header" @click="eventsExpanded = !eventsExpanded">
+          <span>Event Timeline ({{ events.length }})</span>
+          <span class="toggle-icon">{{ eventsExpanded ? '▾' : '▸' }}</span>
+        </h3>
+        <template v-if="eventsExpanded">
+          <div v-if="loading" class="empty-hint">Loading...</div>
+          <div v-else-if="loadError" class="empty-hint error-hint">
+            Failed to load events
           </div>
-          <div v-if="events.length === 0 && !loading" class="empty-hint">
-            No events recorded
+          <div v-else class="timeline">
+            <div
+              v-for="event in reversedEvents"
+              :key="event.id"
+              class="timeline-item event-item"
+            >
+              <span class="timeline-time">{{ formatRelativeTime(event.timestamp) }}</span>
+              <span class="event-name">{{ event.event_name }}</span>
+              <span v-if="event.tool_name" class="event-detail">tool: {{ event.tool_name }}</span>
+              <span v-if="event.notification_type" class="event-detail">{{ event.notification_type }}</span>
+            </div>
+            <div v-if="events.length === 0 && !loading" class="empty-hint">
+              No events recorded
+            </div>
           </div>
-        </div>
+        </template>
       </section>
     </div>
   </aside>
@@ -176,6 +235,28 @@ watch(
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 8px;
+  padding: 4px 6px;
+  margin-left: -6px;
+  margin-right: -6px;
+  transition: background 0.1s;
+}
+
+.section-header:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.toggle-icon {
+  font-size: 12px;
+  opacity: 0.5;
 }
 
 .info-grid {
@@ -289,6 +370,50 @@ watch(
   padding: 2px 8px;
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.05);
+}
+
+.alias-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.alias-value {
+  flex: 1;
+}
+
+.alias-value.placeholder {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.alias-edit-btn {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.alias-edit-btn:hover {
+  background: rgba(124, 156, 255, 0.1);
+  border-color: rgba(124, 156, 255, 0.3);
+  color: var(--accent);
+}
+
+.alias-input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 4px 8px;
+  outline: none;
 }
 
 .empty-hint {
