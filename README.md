@@ -11,7 +11,9 @@ A real-time observation dashboard for multiple Claude Code sessions. Each sessio
 
 ## Features
 
-- **Multi-column kanban view** — each Claude Code session gets its own column
+- **Session Watchlist** — manually pin sessions to the board; only pinned sessions appear as columns (persisted across restarts, synced in real-time across browser tabs)
+- **Session Alias** — give any session a custom name for persistent identification; inline edit on the column header or in the detail panel; alias overrides the auto-generated `basename · id` name
+- **Multi-column kanban view** — each pinned Claude Code session gets its own column
 - **5 session states** — Active, Waiting Permission, Waiting User, Idle, Ended
 - **Real-time updates** — WebSocket push; reconnects automatically
 - **Dual insight sources** — Claude Code hooks events + incremental transcript parsing
@@ -142,13 +144,13 @@ session-dashboard/
 │   ├── setup-hooks.ts        # Hook installer (npm run setup:hooks)
 │   └── dev-simulate.sh       # Simulation script for development
 ├── server/
-│   ├── db.ts                 # SQLite init
+│   ├── db.ts                 # SQLite init + safe column migrations
 │   ├── index.ts              # Express + HTTP + WebSocket entry
 │   ├── routes/
-│   │   ├── events.ts         # POST /api/events, GET /api/sessions
+│   │   ├── events.ts         # POST /api/events, GET/PATCH /api/sessions
 │   │   └── hooks.ts          # GET /api/hooks/status
 │   ├── services/
-│   │   ├── session-manager.ts   # State machine + insight management
+│   │   ├── session-manager.ts   # State machine + insight + pin/alias management
 │   │   └── transcript-watcher.ts # Incremental JSONL parsing
 │   └── ws.ts                 # WebSocket server
 ├── shared/
@@ -158,14 +160,27 @@ session-dashboard/
     │   ├── TopBar.vue
     │   ├── StatsBar.vue
     │   ├── SessionBoard.vue
-    │   ├── SessionColumn.vue
-    │   ├── DetailPanel.vue
+    │   ├── SessionColumn.vue      # Inline alias editing on header hover
+    │   ├── SessionPicker.vue      # Watchlist management panel (pin/unpin)
+    │   ├── DetailPanel.vue        # Session detail + alias edit + collapsible timelines
     │   └── HooksStatus.vue
     ├── stores/
     │   └── session.ts        # Pinia store + WebSocket client
     └── utils/
         └── time.ts           # Relative time formatting
 ```
+
+## API Reference
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/events` | Receive hook events from Claude Code |
+| `GET` | `/api/sessions` | List all sessions |
+| `GET` | `/api/sessions/:id` | Get single session |
+| `GET` | `/api/sessions/:id/events` | Get event timeline |
+| `POST` | `/api/sessions/:id/insights` | Add insight manually |
+| `PATCH` | `/api/sessions/:id/pin` | `{ pinned: boolean }` — pin/unpin to watchlist |
+| `PATCH` | `/api/sessions/:id/alias` | `{ alias: string }` — set or clear custom name |
 
 ## License
 
