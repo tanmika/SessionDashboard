@@ -18,7 +18,9 @@ interface StatusData {
 
 const status = ref<StatusData | null>(null)
 const showPanel = ref(false)
-const rootRef = ref<HTMLElement | null>(null)
+const badgeRef = ref<HTMLElement | null>(null)
+const panelRef = ref<HTMLElement | null>(null)
+const panelStyle = ref<Record<string, string>>({})
 
 const badgeClass = computed(() => {
   if (!status.value) return ''
@@ -37,10 +39,28 @@ async function fetchStatus() {
   }
 }
 
-function onDocClick(e: MouseEvent) {
-  if (rootRef.value && !rootRef.value.contains(e.target as Node)) {
-    showPanel.value = false
+function togglePanel() {
+  if (!showPanel.value && badgeRef.value) {
+    const rect = badgeRef.value.getBoundingClientRect()
+    // Align panel right edge with badge right edge, but ensure it doesn't go off-screen left
+    const panelWidth = 280
+    const rightOffset = window.innerWidth - rect.right
+    const leftEdge = rect.right - panelWidth
+    const clampedRight = leftEdge < 8 ? window.innerWidth - panelWidth - 8 : rightOffset
+    panelStyle.value = {
+      position: 'fixed',
+      top: `${rect.bottom + 8}px`,
+      right: `${clampedRight}px`,
+      zIndex: '9999',
+    }
   }
+  showPanel.value = !showPanel.value
+}
+
+function onDocClick(e: MouseEvent) {
+  const inBadge = badgeRef.value?.contains(e.target as Node)
+  const inPanel = panelRef.value?.contains(e.target as Node)
+  if (!inBadge && !inPanel) showPanel.value = false
 }
 
 let timer: ReturnType<typeof setInterval> | null = null
@@ -58,59 +78,58 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="hooks-status" ref="rootRef" v-if="status">
+  <div v-if="status">
     <button
+      ref="badgeRef"
       class="hooks-badge"
       :class="badgeClass"
-      @click.stop="showPanel = !showPanel"
+      @click.stop="togglePanel"
     >
       <span class="hooks-dot" />
       Hooks {{ status.installedCount }}/{{ status.totalRequired }}
     </button>
 
-    <Transition name="panel-fade">
-      <div v-if="showPanel" class="hooks-panel">
-        <div class="hooks-panel-header">
-          <span>Hook 配置状态</span>
-          <button class="hooks-panel-close" @click="showPanel = false">✕</button>
-        </div>
+    <Teleport to="body">
+      <Transition name="panel-fade">
+        <div v-if="showPanel" ref="panelRef" class="hooks-panel" :style="panelStyle">
+          <div class="hooks-panel-header">
+            <span>Hook 配置状态</span>
+            <button class="hooks-panel-close" @click="showPanel = false">✕</button>
+          </div>
 
-        <div class="hooks-settings-path">{{ status.settingsPath }}</div>
+          <div class="hooks-settings-path">{{ status.settingsPath }}</div>
 
-        <div class="hooks-event-list">
-          <div
-            v-for="ev in status.events"
-            :key="ev.event"
-            class="hooks-event-row"
-            :class="{ ok: ev.installed }"
-          >
-            <span class="hooks-event-icon">{{ ev.installed ? '✓' : '✗' }}</span>
-            <span class="hooks-event-name">{{ ev.event }}</span>
+          <div class="hooks-event-list">
+            <div
+              v-for="ev in status.events"
+              :key="ev.event"
+              class="hooks-event-row"
+              :class="{ ok: ev.installed }"
+            >
+              <span class="hooks-event-icon">{{ ev.installed ? '✓' : '✗' }}</span>
+              <span class="hooks-event-name">{{ ev.event }}</span>
+            </div>
+          </div>
+
+          <div v-if="!status.settingsFound" class="hooks-warn">
+            settings.json 不存在
+          </div>
+
+          <div v-if="!status.configured" class="hooks-setup-hint">
+            <div class="hooks-hint-label">安装缺失的 hooks：</div>
+            <code class="hooks-cmd">{{ status.setupCommand }}</code>
+          </div>
+
+          <div v-else class="hooks-all-ok">
+            ✓ 所有 hooks 已就绪
           </div>
         </div>
-
-        <div v-if="!status.settingsFound" class="hooks-warn">
-          settings.json 不存在
-        </div>
-
-        <div v-if="!status.configured" class="hooks-setup-hint">
-          <div class="hooks-hint-label">安装缺失的 hooks：</div>
-          <code class="hooks-cmd">{{ status.setupCommand }}</code>
-        </div>
-
-        <div v-else class="hooks-all-ok">
-          ✓ 所有 hooks 已就绪
-        </div>
-      </div>
-    </Transition>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
-.hooks-status {
-  position: relative;
-}
-
 /* ─── Badge ─── */
 .hooks-badge {
   display: flex;
@@ -163,11 +182,8 @@ onUnmounted(() => {
   background: var(--danger);
 }
 
-/* ─── Panel ─── */
+/* ─── Panel (teleported to body, position:fixed set inline) ─── */
 .hooks-panel {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
   width: 280px;
   background: var(--panel-2);
   border: 1px solid var(--border);
