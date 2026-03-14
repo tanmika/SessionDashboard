@@ -12,6 +12,7 @@ export const useSessionStore = defineStore('session', () => {
 
   let ws: WebSocket | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let visibilityListenerAdded = false
 
   // ─── Computed ───
 
@@ -99,6 +100,22 @@ export const useSessionStore = defineStore('session', () => {
   // ─── WebSocket ───
 
   function connect() {
+    // On first connect, register a visibility listener so tab-unfreeze triggers immediate reconnect
+    if (!visibilityListenerAdded) {
+      visibilityListenerAdded = true
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            if (reconnectTimer) {
+              clearTimeout(reconnectTimer)
+              reconnectTimer = null
+            }
+            connect()
+          }
+        }
+      })
+    }
+
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     ws = new WebSocket(`${protocol}//${location.host}/ws`)
 
