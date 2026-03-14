@@ -3,6 +3,7 @@ import { ref, watch, computed } from 'vue'
 import { useSessionStore } from '../stores/session'
 import type { SessionEvent } from '../../shared/types'
 import { formatRelativeTime } from '../utils/time'
+import { renderMarkdown } from '../utils/markdown'
 
 const store = useSessionStore()
 
@@ -136,7 +137,7 @@ watch(
               <span class="timeline-time">{{ formatRelativeTime(insight.timestamp) }}</span>
               <span class="source-badge" :class="insight.source">{{ insight.source }}</span>
             </div>
-            <p>{{ insight.content }}</p>
+            <div class="md-content" v-html="renderMarkdown(insight.content)" />
           </div>
           <div v-if="store.selectedSession.insights.length === 0" class="empty-hint">
             No insights yet
@@ -340,11 +341,105 @@ watch(
   border: 1px solid rgba(124, 156, 255, 0.2);
 }
 
-.insight-item p {
-  margin: 6px 0 0;
+:deep(.md-content) {
+  margin-top: 8px;
   font-size: 13px;
   line-height: 1.6;
   color: #e7ecfa;
+}
+
+:deep(.md-content > *:first-child) { margin-top: 0; }
+:deep(.md-content > *:last-child) { margin-bottom: 0; }
+
+:deep(.md-content p) { margin: 0 0 6px; }
+
+:deep(.md-content h1),
+:deep(.md-content h2),
+:deep(.md-content h3) {
+  margin: 8px 0 4px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+}
+
+:deep(.md-content ul),
+:deep(.md-content ol) {
+  margin: 4px 0 6px;
+  padding-left: 18px;
+}
+
+:deep(.md-content li) { margin-bottom: 2px; }
+
+:deep(.md-content code) {
+  font-family: monospace;
+  font-size: 11px;
+  background: rgba(124, 156, 255, 0.12);
+  border: 1px solid rgba(124, 156, 255, 0.18);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #c8d5ff;
+}
+
+:deep(.md-content pre) {
+  margin: 6px 0;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+:deep(.md-content pre code) {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 11px;
+  color: #c8d5ff;
+}
+
+:deep(.md-content blockquote) {
+  margin: 4px 0;
+  padding: 3px 10px;
+  border-left: 3px solid rgba(124, 156, 255, 0.4);
+  color: var(--muted);
+  font-style: italic;
+}
+
+:deep(.md-content strong) { color: #fff; }
+
+:deep(.md-content hr) {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin: 6px 0;
+}
+
+:deep(.md-content .md-table-wrap) {
+  overflow-x: auto;
+  max-width: 100%;
+  margin: 6px 0;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+:deep(.md-content table) {
+  border-collapse: collapse;
+  font-size: 12px;
+  min-width: 100%;
+  margin: 0;
+}
+
+:deep(.md-content th),
+:deep(.md-content td) {
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: left;
+  white-space: nowrap;
+}
+
+:deep(.md-content th) {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font-weight: 600;
 }
 
 .error-hint {

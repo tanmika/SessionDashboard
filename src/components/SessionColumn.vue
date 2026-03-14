@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import type { Session } from '../../shared/types'
 import { formatRelativeTime } from '../utils/time'
+import { renderMarkdown } from '../utils/markdown'
 import { useSessionStore } from '../stores/session'
 
 const props = defineProps<{
@@ -108,7 +109,7 @@ const relativeTime = computed(() => {
             <span class="insight-tag">{{ index === 0 ? 'Latest Insight' : 'Insight' }}</span>
             <span class="insight-time">{{ formatRelativeTime(insight.timestamp) }}</span>
           </div>
-          <p>{{ insight.content }}</p>
+          <div class="insight-body md-content" v-html="renderMarkdown(insight.content)" />
         </article>
       </template>
       <div v-else class="empty-state">
@@ -341,11 +342,113 @@ const relativeTime = computed(() => {
   border: 1px solid rgba(124, 156, 255, 0.24);
 }
 
-.insight p {
-  margin: 0;
+.insight-body {
+  margin-top: 6px;
+  min-width: 0; /* prevent grid item from expanding beyond cell width */
+}
+
+:deep(.md-content) {
+  font-size: 14px;
   line-height: 1.65;
   color: #e7ecfa;
+}
+
+:deep(.md-content > *:first-child) { margin-top: 0; }
+:deep(.md-content > *:last-child) { margin-bottom: 0; }
+
+:deep(.md-content p) {
+  margin: 0 0 8px;
+}
+
+:deep(.md-content h1),
+:deep(.md-content h2),
+:deep(.md-content h3) {
+  margin: 10px 0 6px;
   font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+}
+
+:deep(.md-content ul),
+:deep(.md-content ol) {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+}
+
+:deep(.md-content li) {
+  margin-bottom: 3px;
+}
+
+:deep(.md-content code) {
+  font-family: monospace;
+  font-size: 12px;
+  background: rgba(124, 156, 255, 0.12);
+  border: 1px solid rgba(124, 156, 255, 0.18);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #c8d5ff;
+}
+
+:deep(.md-content pre) {
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+:deep(.md-content pre code) {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: #c8d5ff;
+}
+
+:deep(.md-content blockquote) {
+  margin: 6px 0;
+  padding: 4px 12px;
+  border-left: 3px solid rgba(124, 156, 255, 0.4);
+  color: var(--muted);
+  font-style: italic;
+}
+
+:deep(.md-content strong) { color: #fff; }
+
+:deep(.md-content hr) {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin: 8px 0;
+}
+
+:deep(.md-content .md-table-wrap) {
+  overflow-x: auto;
+  max-width: 100%;
+  margin: 8px 0;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+:deep(.md-content table) {
+  border-collapse: collapse;
+  font-size: 12px;
+  min-width: 100%;
+  margin: 0;
+}
+
+:deep(.md-content th),
+:deep(.md-content td) {
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: left;
+  white-space: nowrap;
+}
+
+:deep(.md-content th) {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font-weight: 600;
 }
 
 .empty-state {
