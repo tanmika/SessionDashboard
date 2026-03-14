@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { basename } from 'path'
+import { existsSync } from 'fs'
 import type {
   HookEventPayload,
   Session,
@@ -8,8 +9,9 @@ import type {
   Insight,
   WsMessage,
 } from '../../shared/types.js'
-import { IDLE_THRESHOLD_MS, STATE_PRIORITY } from '../../shared/types.js'
+import { IDLE_THRESHOLD_MS, CODEX_ENDED_THRESHOLD_MS, STATE_PRIORITY } from '../../shared/types.js'
 import { TranscriptWatcher } from './transcript-watcher.js'
+import { CodexWatcher, CODEX_SESSIONS_DIR } from './codex-watcher.js'
 
 // Events that signal real progress (can clear waiting state)
 const PROGRESS_EVENTS = new Set([
@@ -28,6 +30,7 @@ export class SessionManager {
   private broadcast: BroadcastFn = () => {}
   private idleTimer: ReturnType<typeof setInterval> | null = null
   private transcriptWatcher: TranscriptWatcher
+  private codexWatcher: CodexWatcher | null = null
 
   // Prepared statements
   private stmtInsertSession: Database.Statement
@@ -47,8 +50,8 @@ export class SessionManager {
 
     // Prepare statements
     this.stmtInsertSession = db.prepare(`
-      INSERT OR IGNORE INTO sessions (session_id, cwd, transcript_path, state, last_activity, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO sessions (session_id, cwd, transcript_path, state, last_activity, created_at, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `)
     this.stmtUpdateSession = db.prepare(`
       UPDATE sessions SET state = ?, last_activity = ?, cwd = ?, transcript_path = ?
@@ -74,6 +77,7 @@ export class SessionManager {
 
     this.restoreFromDb()
     this.startIdleChecker()
+    this.initCodexWatcher()
   }
 
   setBroadcast(fn: BroadcastFn) {
@@ -96,21 +100,92 @@ export class SessionManager {
         created_at: row.created_at,
         alias: row.alias || '',
         pinned: row.pinned === 1,
+        source: (row.source as 'claude' | 'codex') ?? 'claude',
         insights,
         active_tools: 0,
         active_subagents: 0,
       }
       this.sessions.set(row.session_id, session)
 
-      // Resume transcript watching for all sessions with a transcript path.
+      // Resume transcript watching for Claude sessions with a transcript path.
       // Even ended sessions may have their transcript continued (e.g. context-summary resumptions).
-      if (row.transcript_path) {
+      if (session.source === 'claude' && row.transcript_path) {
         this.transcriptWatcher.watch(row.session_id, row.transcript_path)
       }
     }
   }
 
-  // ─── Handle incoming hook event ───
+  // ─── Codex Watcher initialization ───
+
+  private initCodexWatcher() {
+    if (!existsSync(CODEX_SESSIONS_DIR)) {
+      console.log('[session-manager] ~/.codex/sessions/ not found, Codex monitoring disabled')
+      return
+    }
+
+    this.codexWatcher = new CodexWatcher({
+      onSessionDiscovered: (sessionId, cwd, displayName, rolloutPath, timestamp) => {
+        this.handleCodexSessionDiscovered(sessionId, cwd, displayName, rolloutPath, timestamp)
+      },
+      onStateChange: (sessionId, newState, timestamp) => {
+        this.handleCodexStateChange(sessionId, newState, timestamp)
+      },
+      onInsight: (sessionId, content) => {
+        this.addInsight(sessionId, content, 'transcript')
+      },
+      onEvent: (sessionId, eventName, timestamp, rawPayload) => {
+        this.handleCodexEvent(sessionId, eventName, timestamp, rawPayload)
+      },
+    })
+
+    this.codexWatcher.start()
+  }
+
+  // ─── Codex callback handlers ───
+
+  private handleCodexSessionDiscovered(
+    sessionId: string, cwd: string, displayName: string, rolloutPath: string, timestamp: string
+  ) {
+    if (this.sessions.has(sessionId)) return // Already known
+
+    const session = this.createSession(sessionId, cwd, rolloutPath, timestamp, 'codex')
+
+    // Use thread_name as alias if available
+    if (displayName) {
+      session.alias = displayName
+      session.display_name = this.makeDisplayName(cwd, sessionId, displayName)
+      this.stmtSetAlias.run(displayName, sessionId)
+    }
+  }
+
+  private handleCodexStateChange(sessionId: string, newState: 'active' | 'inactive', timestamp: string) {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+
+    // Don't resurrect ended sessions from Codex events
+    if (session.state === 'ended') return
+
+    session.state = newState
+    session.last_activity = timestamp
+    this.persistAndBroadcast(session)
+  }
+
+  private handleCodexEvent(sessionId: string, eventName: string, timestamp: string, rawPayload: string) {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+
+    this.stmtInsertEvent.run(
+      sessionId,
+      eventName,
+      null, // notification_type
+      null, // tool_name
+      null, // subagent_id
+      timestamp,
+      rawPayload
+    )
+  }
+
+  // ─── Handle incoming hook event (Claude Code) ───
 
   handleEvent(payload: HookEventPayload): Session {
     const now = payload.timestamp || new Date().toISOString()
@@ -119,7 +194,7 @@ export class SessionManager {
     // Ensure session exists
     let session = this.sessions.get(sid)
     if (!session) {
-      session = this.createSession(sid, payload.cwd || '', payload.transcript_path, now)
+      session = this.createSession(sid, payload.cwd || '', payload.transcript_path, now, 'claude')
     }
 
     // Update cwd/transcript if provided
@@ -150,21 +225,12 @@ export class SessionManager {
     this.applyEvent(session, payload, now)
 
     // Persist session state
-    this.stmtUpdateSession.run(
-      session.state,
-      session.last_activity,
-      session.cwd,
-      session.transcript_path || '',
-      sid
-    )
-
-    // Broadcast if state changed or activity updated
-    this.broadcast({ type: 'session_update', data: session })
+    this.persistAndBroadcast(session)
 
     return session
   }
 
-  // ─── State machine ───
+  // ─── State machine (Claude Code events) ───
 
   private applyEvent(session: Session, payload: HookEventPayload, timestamp: string) {
     const event = payload.hook_event_name
@@ -264,16 +330,18 @@ export class SessionManager {
         if (session.active_tools > 0 || session.active_subagents > 0) continue
 
         const elapsed = now - new Date(session.last_activity).getTime()
+
+        // active/inactive → idle (after IDLE_THRESHOLD_MS)
         if (elapsed >= IDLE_THRESHOLD_MS && session.state !== 'idle') {
           session.state = 'idle'
-          this.stmtUpdateSession.run(
-            session.state,
-            session.last_activity,
-            session.cwd,
-            session.transcript_path || '',
-            session.session_id
-          )
-          this.broadcast({ type: 'session_update', data: session })
+          this.persistAndBroadcast(session)
+          continue
+        }
+
+        // idle → ended (after CODEX_ENDED_THRESHOLD_MS, Codex only)
+        if (session.state === 'idle' && session.source === 'codex' && elapsed >= CODEX_ENDED_THRESHOLD_MS) {
+          session.state = 'ended'
+          this.persistAndBroadcast(session)
         }
       }
     }, 10_000) // Check every 10s
@@ -303,7 +371,7 @@ export class SessionManager {
     if (source === 'transcript' && (session.state === 'waiting_user' || session.state === 'waiting_permission')) {
       session.state = 'active'
       session.last_activity = now
-      this.stmtUpdateSession.run(session.state, session.last_activity, session.cwd, session.transcript_path || '', sessionId)
+      this.persistAndBroadcast(session)
     }
 
     this.broadcast({ type: 'new_insight', session_id: sessionId, insight })
@@ -357,7 +425,8 @@ export class SessionManager {
     sessionId: string,
     cwd: string,
     transcriptPath: string | undefined,
-    timestamp: string
+    timestamp: string,
+    source: 'claude' | 'codex' = 'claude'
   ): Session {
     const session: Session = {
       session_id: sessionId,
@@ -369,6 +438,7 @@ export class SessionManager {
       created_at: timestamp,
       alias: '',
       pinned: false,
+      source,
       insights: [],
       active_tools: 0,
       active_subagents: 0,
@@ -380,17 +450,29 @@ export class SessionManager {
       transcriptPath || '',
       'active',
       timestamp,
-      timestamp
+      timestamp,
+      source
     )
 
     this.sessions.set(sessionId, session)
 
-    // Start transcript watcher immediately for new sessions
-    if (transcriptPath) {
+    // Start transcript watcher immediately for new Claude sessions
+    if (source === 'claude' && transcriptPath) {
       this.transcriptWatcher.watch(sessionId, transcriptPath)
     }
 
     return session
+  }
+
+  private persistAndBroadcast(session: Session) {
+    this.stmtUpdateSession.run(
+      session.state,
+      session.last_activity,
+      session.cwd,
+      session.transcript_path || '',
+      session.session_id
+    )
+    this.broadcast({ type: 'session_update', data: session })
   }
 
   private makeDisplayName(cwd: string, sessionId: string, alias?: string): string {
@@ -403,5 +485,6 @@ export class SessionManager {
   destroy() {
     if (this.idleTimer) clearInterval(this.idleTimer)
     this.transcriptWatcher.unwatchAll()
+    this.codexWatcher?.stop()
   }
 }
