@@ -6,6 +6,7 @@ import { SERVER_PORT } from '../shared/types.js'
 import { initDb } from './db.js'
 import { createWsServer } from './ws.js'
 import { createEventRoutes } from './routes/events.js'
+import { createHookRoutes } from './routes/hooks.js'
 import { SessionManager } from './services/session-manager.js'
 
 const app = express()
@@ -27,6 +28,7 @@ sessionManager.setBroadcast(wss.broadcast)
 
 // Mount API routes
 app.use('/api', createEventRoutes(sessionManager))
+app.use('/api', createHookRoutes())
 
 // Health check
 app.get('/api/health', (_req, res) => {

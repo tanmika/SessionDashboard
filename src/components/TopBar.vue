@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useSessionStore } from '../stores/session'
 import type { SessionState } from '../../shared/types'
+import HooksStatus from './HooksStatus.vue'
 
 const store = useSessionStore()
 
@@ -29,8 +30,11 @@ const filters: { label: string; value: SessionState | 'all' }[] = [
           鼠标滚轮：控制列内纵向滚动<br />
           键盘：<code>Q / E</code> 或 <code>← / →</code> 横向移动列
         </div>
-        <div class="connection-status" :class="{ connected: store.wsConnected }">
-          {{ store.wsConnected ? 'Connected' : 'Reconnecting...' }}
+        <div class="status-row">
+          <HooksStatus />
+          <div class="connection-status" :class="{ connected: store.wsConnected }">
+            {{ store.wsConnected ? 'Connected' : 'Reconnecting...' }}
+          </div>
         </div>
       </div>
     </div>
@@ -110,6 +114,13 @@ const filters: { label: string; value: SessionState | 'all' }[] = [
   color: var(--muted);
   font-size: 13px;
   line-height: 1.6;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .connection-status {
