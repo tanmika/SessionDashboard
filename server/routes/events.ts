@@ -75,20 +75,5 @@ export function createEventRoutes(sessionManager: SessionManager): Router {
     res.json({ ok: true, data: session })
   })
 
-  // Add insight (for testing / transcript parser)
-  router.post('/sessions/:id/insights', (req, res) => {
-    const { content, source } = req.body
-    if (!content) {
-      res.status(400).json({ ok: false, error: 'Missing content' })
-      return
-    }
-    const insight = sessionManager.addInsight(req.params.id, content, source || 'transcript')
-    if (!insight) {
-      res.status(404).json({ ok: false, error: 'Session not found' })
-      return
-    }
-    res.json({ ok: true, data: insight })
-  })
-
   return router
 }

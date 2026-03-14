@@ -133,10 +133,7 @@ watch(
             :key="insight.id"
             class="timeline-item insight-item"
           >
-            <div class="insight-meta">
-              <span class="timeline-time">{{ formatRelativeTime(insight.timestamp) }}</span>
-              <span class="source-badge" :class="insight.source">{{ insight.source }}</span>
-            </div>
+            <span class="timeline-time">{{ formatRelativeTime(insight.timestamp) }}</span>
             <div class="md-content" v-html="renderMarkdown(insight.content)" />
           </div>
           <div v-if="store.selectedSession.insights.length === 0" class="empty-hint">
@@ -315,31 +312,6 @@ watch(
   color: var(--muted);
 }
 
-.insight-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.source-badge {
-  font-size: 10px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.source-badge.transcript {
-  background: rgba(94, 234, 212, 0.12);
-  color: #7fffed;
-  border: 1px solid rgba(94, 234, 212, 0.2);
-}
-
-.source-badge.hook {
-  background: rgba(124, 156, 255, 0.12);
-  color: #a5bdff;
-  border: 1px solid rgba(124, 156, 255, 0.2);
-}
 
 :deep(.md-content) {
   margin-top: 8px;
