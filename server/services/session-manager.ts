@@ -278,6 +278,13 @@ export class SessionManager {
     // Prepend (newest first)
     session.insights.unshift(insight)
 
+    // PRD §10.6: a new transcript insight is a real progress signal — resolve waiting
+    if (source === 'transcript' && (session.state === 'waiting_user' || session.state === 'waiting_permission')) {
+      session.state = 'active'
+      session.last_activity = now
+      this.stmtUpdateSession.run(session.state, session.last_activity, session.cwd, session.transcript_path || '', sessionId)
+    }
+
     this.broadcast({ type: 'new_insight', session_id: sessionId, insight })
     return insight
   }

@@ -6,7 +6,7 @@ import { SORT_PRIORITY } from '../../shared/types'
 export const useSessionStore = defineStore('session', () => {
   const sessions = ref<Map<string, Session>>(new Map())
   const selectedSessionId = ref<string | null>(null)
-  const filterState = ref<SessionState | 'all'>('all')
+  const filterState = ref<SessionState | 'all' | 'needs_attention'>('all')
   const searchQuery = ref('')
   const wsConnected = ref(false)
 
@@ -22,7 +22,9 @@ export const useSessionStore = defineStore('session', () => {
     let list = Array.from(sessions.value.values())
 
     // Filter by state
-    if (filterState.value !== 'all') {
+    if (filterState.value === 'needs_attention') {
+      list = list.filter((s) => s.state === 'waiting_permission' || s.state === 'waiting_user')
+    } else if (filterState.value !== 'all') {
       list = list.filter((s) => s.state === filterState.value)
     }
 
@@ -155,7 +157,7 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  function setFilter(state: SessionState | 'all') {
+  function setFilter(state: SessionState | 'all' | 'needs_attention') {
     filterState.value = state
   }
 

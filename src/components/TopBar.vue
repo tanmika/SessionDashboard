@@ -5,8 +5,9 @@ import HooksStatus from './HooksStatus.vue'
 
 const store = useSessionStore()
 
-const filters: { label: string; value: SessionState | 'all' }[] = [
+const filters: { label: string; value: SessionState | 'all' | 'needs_attention'; attention?: boolean }[] = [
   { label: 'All', value: 'all' },
+  { label: 'Needs Attention', value: 'needs_attention', attention: true },
   { label: 'Waiting Permission', value: 'waiting_permission' },
   { label: 'Waiting User', value: 'waiting_user' },
   { label: 'Active', value: 'active' },
@@ -45,7 +46,7 @@ const filters: { label: string; value: SessionState | 'all' }[] = [
           v-for="f in filters"
           :key="f.value"
           class="chip"
-          :class="{ active: store.filterState === f.value }"
+          :class="{ active: store.filterState === f.value, attention: f.attention }"
           @click="store.setFilter(f.value)"
         >
           {{ f.label }}
@@ -166,6 +167,16 @@ const filters: { label: string; value: SessionState | 'all' }[] = [
   color: var(--text);
   background: rgba(124, 156, 255, 0.14);
   border-color: rgba(124, 156, 255, 0.38);
+}
+
+.chip.attention {
+  color: #ffd38a;
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+.chip.attention.active {
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.42);
 }
 
 .search {
