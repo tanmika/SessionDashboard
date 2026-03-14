@@ -331,6 +331,12 @@ export class SessionManager {
     )
 
     this.sessions.set(sessionId, session)
+
+    // Start transcript watcher immediately for new sessions
+    if (transcriptPath) {
+      this.transcriptWatcher.watch(sessionId, transcriptPath)
+    }
+
     return session
   }
 

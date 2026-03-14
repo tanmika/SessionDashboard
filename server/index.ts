@@ -12,7 +12,7 @@ import { SessionManager } from './services/session-manager.js'
 const app = express()
 const httpServer = createServer(app)
 
-app.use(express.json())
+app.use(express.json({ limit: '10mb' }))
 
 // Initialize database
 const db = initDb()
