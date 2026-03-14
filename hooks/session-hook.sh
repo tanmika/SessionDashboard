@@ -19,6 +19,7 @@ if command -v jq &>/dev/null; then
     tool_name,
     subagent_id,
     notification_type,
+    matcher,
     timestamp
   } | with_entries(select(.value != null and .value != ""))' 2>/dev/null)
   [ $? -eq 0 ] && [ -n "$COMPACT" ] && PAYLOAD="$COMPACT"

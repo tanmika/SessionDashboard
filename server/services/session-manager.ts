@@ -96,8 +96,9 @@ export class SessionManager {
       }
       this.sessions.set(row.session_id, session)
 
-      // Resume transcript watching for non-ended sessions
-      if (row.state !== 'ended' && row.transcript_path) {
+      // Resume transcript watching for all sessions with a transcript path.
+      // Even ended sessions may have their transcript continued (e.g. context-summary resumptions).
+      if (row.transcript_path) {
         this.transcriptWatcher.watch(row.session_id, row.transcript_path)
       }
     }
@@ -162,8 +163,22 @@ export class SessionManager {
   private applyEvent(session: Session, payload: HookEventPayload, timestamp: string) {
     const event = payload.hook_event_name
 
-    // Ended is terminal
-    if (session.state === 'ended') return
+    // Ended is terminal — except SessionStart(resume|compact) can resurrect a session.
+    // This happens when: /resume, --continue, or auto context-compaction restarts the same session_id.
+    if (session.state === 'ended') {
+      if (event === 'SessionStart' && payload.matcher !== 'startup') {
+        // 'resume', 'compact', 'clear' — same session continuing
+        session.state = 'active'
+        session.last_activity = timestamp
+        session.active_tools = 0
+        session.active_subagents = 0
+        // Ensure transcript watcher is running for the resumed session
+        if (session.transcript_path) {
+          this.transcriptWatcher.updatePath(session.session_id, session.transcript_path)
+        }
+      }
+      return
+    }
 
     // Track activity time for progress events
     if (PROGRESS_EVENTS.has(event) || event === 'SessionStart') {

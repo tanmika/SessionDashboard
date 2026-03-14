@@ -41,11 +41,16 @@ export const SORT_PRIORITY: Record<SessionState, number> = {
 
 // ─── Incoming Hook Event (what Claude Code sends) ───
 
+// SessionStart matcher values (from Claude Code docs)
+export type SessionStartMatcher = 'startup' | 'resume' | 'clear' | 'compact'
+
 export interface HookEventPayload {
   session_id: string
   transcript_path?: string
   cwd?: string
   hook_event_name: HookEventName
+  // SessionStart: how the session was initiated
+  matcher?: SessionStartMatcher
   // Notification sub-type
   notification_type?: string
   // Tool info for PreToolUse/PostToolUse

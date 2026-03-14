@@ -1,3 +1,7 @@
+**Languages:** English | [简体中文](README.zh-CN.md)
+
+---
+
 # Session Dashboard
 
 A real-time observation dashboard for multiple Claude Code sessions. Each session occupies a dedicated column displaying its current state and insights in reverse chronological order, with local event persistence so the view survives page refreshes and runtime restarts.
