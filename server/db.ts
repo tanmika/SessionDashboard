@@ -50,6 +50,7 @@ export function initDb(): Database.Database {
   try { db.exec(`ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE sessions ADD COLUMN alias TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'`) } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE sessions ADD COLUMN predecessor_id TEXT DEFAULT ''`) } catch { /* already exists */ }
 
   return db
 }

@@ -37,6 +37,7 @@ export class SessionManager {
   private stmtUpdateSession: Database.Statement
   private stmtSetPinned: Database.Statement
   private stmtSetAlias: Database.Statement
+  private stmtSetPredecessor: Database.Statement
   private stmtInsertEvent: Database.Statement
   private stmtInsertInsight: Database.Statement
   private stmtGetSessions: Database.Statement
@@ -59,6 +60,7 @@ export class SessionManager {
     `)
     this.stmtSetPinned = db.prepare(`UPDATE sessions SET pinned = ? WHERE session_id = ?`)
     this.stmtSetAlias = db.prepare(`UPDATE sessions SET alias = ? WHERE session_id = ?`)
+    this.stmtSetPredecessor = db.prepare(`UPDATE sessions SET predecessor_id = ? WHERE session_id = ?`)
     this.stmtInsertEvent = db.prepare(`
       INSERT INTO events (session_id, event_name, notification_type, tool_name, subagent_id, timestamp, raw_payload)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -101,6 +103,7 @@ export class SessionManager {
         alias: row.alias || '',
         pinned: row.pinned === 1,
         source: (row.source as 'claude' | 'codex') ?? 'claude',
+        predecessor_id: row.predecessor_id || undefined,
         insights,
         active_tools: 0,
         active_subagents: 0,
@@ -193,8 +196,15 @@ export class SessionManager {
 
     // Ensure session exists
     let session = this.sessions.get(sid)
+    let isNew = false
     if (!session) {
       session = this.createSession(sid, payload.cwd || '', payload.transcript_path, now, 'claude')
+      isNew = true
+    }
+
+    // Auto-inherit pin & alias from predecessor on context-clear handoff
+    if (isNew && payload.hook_event_name === 'SessionStart') {
+      this.tryInheritFromPredecessor(session, now)
     }
 
     // Update cwd/transcript if provided
@@ -473,6 +483,66 @@ export class SessionManager {
       session.session_id
     )
     this.broadcast({ type: 'session_update', data: session })
+  }
+
+  // ─── Session handoff (context-clear auto-inheritance) ───
+
+  private findPredecessor(cwd: string, timestamp: string, source: 'claude' | 'codex'): Session | null {
+    const MAX_GAP_MS = 1_000 // Context-clear handoff is near-instant (< 200ms in practice)
+    const now = new Date(timestamp).getTime()
+    let best: Session | null = null
+    let bestTime = 0
+
+    for (const s of this.sessions.values()) {
+      if (s.state !== 'ended') continue
+      if (s.source !== source) continue
+      if (s.cwd !== cwd) continue
+      if (!s.pinned && !s.alias) continue
+
+      const endedAt = new Date(s.last_activity).getTime()
+      const gap = now - endedAt
+      if (gap < 0 || gap > MAX_GAP_MS) continue
+
+      if (endedAt > bestTime) {
+        best = s
+        bestTime = endedAt
+      }
+    }
+    return best
+  }
+
+  private tryInheritFromPredecessor(session: Session, timestamp: string) {
+    const predecessor = this.findPredecessor(session.cwd, timestamp, session.source)
+    if (!predecessor) return
+
+    // Inherit pin
+    if (predecessor.pinned) {
+      session.pinned = true
+      this.stmtSetPinned.run(1, session.session_id)
+    }
+
+    // Inherit alias
+    if (predecessor.alias) {
+      session.alias = predecessor.alias
+      session.display_name = this.makeDisplayName(session.cwd, session.session_id, session.alias)
+      this.stmtSetAlias.run(session.alias, session.session_id)
+    }
+
+    // Record predecessor link
+    session.predecessor_id = predecessor.session_id
+    this.stmtSetPredecessor.run(predecessor.session_id, session.session_id)
+
+    // Unpin predecessor to avoid duplicate columns on the board
+    if (predecessor.pinned) {
+      predecessor.pinned = false
+      this.stmtSetPinned.run(0, predecessor.session_id)
+      this.broadcast({ type: 'session_pin_update', session_id: predecessor.session_id, pinned: false })
+    }
+
+    console.log(
+      `[session-manager] Handoff: ${predecessor.session_id.slice(0, 8)} → ${session.session_id.slice(0, 8)}` +
+      ` (pinned=${session.pinned}, alias="${session.alias}")`
+    )
   }
 
   private makeDisplayName(cwd: string, sessionId: string, alias?: string): string {

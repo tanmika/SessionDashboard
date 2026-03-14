@@ -122,6 +122,13 @@ watch(
             <span class="info-label">Last Activity</span>
             <span class="info-value">{{ formatRelativeTime(store.selectedSession.last_activity) }}</span>
           </div>
+          <div class="info-item" v-if="store.selectedSession.predecessor_id">
+            <span class="info-label">Predecessor</span>
+            <span
+              class="info-value mono predecessor-link"
+              @click="store.selectSession(store.selectedSession!.predecessor_id!)"
+            >{{ store.selectedSession.predecessor_id.slice(0, 8) }}… ↗</span>
+          </div>
         </div>
       </section>
 
@@ -287,6 +294,16 @@ watch(
 .info-value {
   font-size: 13px;
   word-break: break-all;
+}
+
+.predecessor-link {
+  color: var(--accent);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.predecessor-link:hover {
+  opacity: 0.75;
 }
 
 .info-value.mono {
