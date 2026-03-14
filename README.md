@@ -4,19 +4,21 @@
 
 # Session Dashboard
 
-A real-time observation dashboard for multiple Claude Code sessions. Each session occupies a dedicated column displaying its current state and insights in reverse chronological order, with local event persistence so the view survives page refreshes and runtime restarts.
+A real-time observation dashboard for **Claude Code** and **Codex CLI** sessions. Each session occupies a dedicated column displaying its current state and insights in reverse chronological order, with local event persistence so the view survives page refreshes and runtime restarts.
 
 ![Session Dashboard](https://img.shields.io/badge/stack-Vue%203%20%2B%20Node.js-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 ## Features
 
+- **Multi-tool support** — monitors both Claude Code (via HTTP hooks) and Codex CLI (via filesystem watching) on a unified board
 - **Session Watchlist** — manually pin sessions to the board; only pinned sessions appear as columns (persisted across restarts, synced in real-time across browser tabs)
 - **Session Alias** — give any session a custom name for persistent identification; inline edit on the column header or in the detail panel; alias overrides the auto-generated `basename · id` name
-- **Multi-column kanban view** — each pinned Claude Code session gets its own column
-- **5 session states** — Active, Waiting Permission, Waiting User, Idle, Ended
+- **Multi-column kanban view** — each pinned session gets its own column
+- **6 session states** — Active, Waiting Permission, Waiting User, Inactive, Idle, Ended
+- **Source badge** — each column displays a Claude (blue) or Codex (green) badge
 - **Real-time updates** — WebSocket push; reconnects automatically
-- **Dual insight sources** — Claude Code hooks events + incremental transcript parsing
+- **Dual insight sources** — Claude Code hooks events + incremental transcript / rollout parsing
 - **Persistent storage** — SQLite (WAL mode); survives page close, refresh, and runtime restart
 - **Smart column sorting** — blocking sessions (waiting) float to the front automatically
 - **Selected-column freeze** — column order locks while a detail panel is open
@@ -33,7 +35,8 @@ A real-time observation dashboard for multiple Claude Code sessions. Each sessio
 ## Prerequisites
 
 - Node.js ≥ 18
-- Claude Code with hooks support
+- Claude Code with hooks support (for Claude Code monitoring)
+- Codex CLI (for Codex monitoring; optional — dashboard works without it)
 - `jq` (optional, but recommended — used by the hook script to strip large payloads)
 
 ## Getting Started
@@ -70,6 +73,16 @@ This installs the required hooks into `~/.claude/settings.json`. The script is *
 
 > The dashboard will show a `Hooks 8/8` badge in the top-right corner once all hooks are detected.
 
+### 5. Set up Codex CLI insight injection (optional)
+
+```bash
+npm run setup:codex
+```
+
+This injects `★ Insight` output-style instructions into `~/.codex/AGENTS.md` so that Codex CLI sessions produce structured insight blocks the dashboard can parse. The script is **idempotent** — uses `<---session-dashboard-insight--->` marker tags for dedup and in-place update.
+
+> If `~/.codex/sessions/` does not exist, the dashboard silently skips Codex monitoring — no errors.
+
 ## Development
 
 Start the backend and frontend in watch mode simultaneously:
@@ -99,40 +112,47 @@ To change the default port, edit `SERVER_PORT` in `shared/types.ts`.
 ## How It Works
 
 ```
-Claude Code session
-      │
-      │  hooks (SessionStart, PreToolUse, etc.)
-      ▼
-hook script (hooks/session-hook.sh)
-      │  POST /api/events
-      ▼
-Express runtime (server/)
-      ├── SQLite  ─────────────────── persist events & insights
-      ├── TranscriptWatcher ───────── watch ~/.claude/projects/**/*.jsonl
-      │       └── extract ★ Insight blocks (or fallback paragraphs)
-      └── WebSocket broadcast
-              │
-              ▼
-        Vue 3 dashboard (browser)
+Claude Code session                Codex CLI session
+      │                                   │
+      │  hooks (HTTP POST)                │  fs.watch (rollout JSONL)
+      ▼                                   ▼
+hook script                         CodexWatcher
+(hooks/session-hook.sh)             (server/services/codex-watcher.ts)
+      │  POST /api/events                 │  callbacks
+      ▼                                   ▼
+              SessionManager (server/services/session-manager.ts)
+                ├── SQLite  ─────────────────── persist events & insights
+                ├── TranscriptWatcher ───────── watch Claude transcript JSONL
+                ├── CodexWatcher ────────────── watch ~/.codex/sessions/ rollouts
+                │       └── shared insight-extractor (★ Insight blocks or fallback)
+                └── WebSocket broadcast
+                        │
+                        ▼
+                  Vue 3 dashboard (browser)
 ```
 
-**Insight extraction** uses a two-tier strategy:
-1. Regex match for `` `★ Insight ───` `` blocks (Claude Code explanatory mode)
+**Architecture difference:**
+- **Claude Code** = active push (hooks → HTTP POST → server)
+- **Codex CLI** = passive discovery (fs.watch rollout directory → incremental JSONL parsing)
+
+**Insight extraction** uses a two-tier strategy (shared by both sources):
+1. Regex match for `` `★ Insight ───` `` blocks (explanatory mode)
 2. Fallback to text paragraphs longer than 150 characters
 
 MD5 hashing prevents duplicate insights across incremental file reads.
 
 ## Session States
 
-| State | Trigger |
-|---|---|
-| `Active` | Tool executing, subagent running, or recent progress |
-| `Waiting Permission` | `PermissionRequest` / `Notification(permission_prompt)` |
-| `Waiting User` | `Notification(elicitation_dialog \| idle_prompt)` |
-| `Idle` | No real progress for 3 minutes (configurable via `IDLE_THRESHOLD_MS`) |
-| `Ended` | `SessionEnd` — terminal, never transitions back |
+| State | Trigger | Source |
+|---|---|---|
+| `Active` | Tool executing, subagent running, or recent progress | Both |
+| `Waiting Permission` | `PermissionRequest` / `Notification(permission_prompt)` | Claude only |
+| `Waiting User` | `Notification(elicitation_dialog \| idle_prompt)` | Claude only |
+| `Inactive` | `task_complete` — turn finished, awaiting next user input | Codex only |
+| `Idle` | No progress for 3 min (`IDLE_THRESHOLD_MS`) | Both |
+| `Ended` | `SessionEnd` (Claude) or idle 30 min (`CODEX_ENDED_THRESHOLD_MS`, Codex) | Both |
 
-Column sort order: **Waiting Permission → Waiting User → Active → Idle → Ended**
+Column sort order: **Waiting Permission → Waiting User → Active → Inactive → Idle → Ended**
 
 ## Project Structure
 
@@ -142,6 +162,7 @@ session-dashboard/
 │   └── session-hook.sh       # Claude Code hook script
 ├── scripts/
 │   ├── setup-hooks.ts        # Hook installer (npm run setup:hooks)
+│   ├── setup-codex.ts        # Codex insight injection (npm run setup:codex)
 │   └── dev-simulate.sh       # Simulation script for development
 ├── server/
 │   ├── db.ts                 # SQLite init + safe column migrations
@@ -150,8 +171,11 @@ session-dashboard/
 │   │   ├── events.ts         # POST /api/events, GET/PATCH /api/sessions
 │   │   └── hooks.ts          # GET /api/hooks/status
 │   ├── services/
-│   │   ├── session-manager.ts   # State machine + insight + pin/alias management
-│   │   └── transcript-watcher.ts # Incremental JSONL parsing
+│   │   ├── session-manager.ts    # State machine + insight + pin/alias management
+│   │   ├── transcript-watcher.ts # Claude transcript incremental JSONL parsing
+│   │   └── codex-watcher.ts      # Codex rollout directory monitoring + JSONL parsing
+│   ├── utils/
+│   │   └── insight-extractor.ts  # Shared insight extraction (★ blocks + fallback)
 │   └── ws.ts                 # WebSocket server
 ├── shared/
 │   └── types.ts              # Shared TypeScript types
@@ -160,14 +184,15 @@ session-dashboard/
     │   ├── TopBar.vue
     │   ├── StatsBar.vue
     │   ├── SessionBoard.vue
-    │   ├── SessionColumn.vue      # Inline alias editing on header hover
+    │   ├── SessionColumn.vue      # Inline alias editing + source badge
     │   ├── SessionPicker.vue      # Watchlist management panel (pin/unpin)
     │   ├── DetailPanel.vue        # Session detail + alias edit + collapsible timelines
     │   └── HooksStatus.vue
     ├── stores/
     │   └── session.ts        # Pinia store + WebSocket client
     └── utils/
-        └── time.ts           # Relative time formatting
+        ├── time.ts           # Relative time formatting
+        └── markdown.ts       # Markdown rendering (marked + DOMPurify)
 ```
 
 ## API Reference
@@ -178,7 +203,6 @@ session-dashboard/
 | `GET` | `/api/sessions` | List all sessions |
 | `GET` | `/api/sessions/:id` | Get single session |
 | `GET` | `/api/sessions/:id/events` | Get event timeline |
-| `POST` | `/api/sessions/:id/insights` | Add insight manually |
 | `PATCH` | `/api/sessions/:id/pin` | `{ pinned: boolean }` — pin/unpin to watchlist |
 | `PATCH` | `/api/sessions/:id/alias` | `{ alias: string }` — set or clear custom name |
 
