@@ -111,6 +111,10 @@ watch(
             <span class="info-value mono small">{{ store.selectedSession.transcript_path }}</span>
           </div>
           <div class="info-item">
+            <span class="info-label">Source</span>
+            <span class="info-value">{{ store.selectedSession.source === 'codex' ? 'Codex CLI' : 'Claude Code' }}</span>
+          </div>
+          <div class="info-item">
             <span class="info-label">State</span>
             <span class="info-value">{{ store.selectedSession.state }}</span>
           </div>

@@ -44,6 +44,7 @@ const stateLabel = computed(() => {
     active: 'Active',
     waiting_permission: 'Waiting Permission',
     waiting_user: 'Waiting User',
+    inactive: 'Inactive',
     idle: 'Idle',
     ended: 'Ended',
   }
@@ -84,7 +85,10 @@ const relativeTime = computed(() => {
           </div>
           <div class="column-subtitle">{{ session.session_id.slice(0, 8) }}</div>
         </div>
-        <span class="status" :class="stateClass">{{ stateLabel }}</span>
+        <div class="badges">
+          <span class="source-badge" :class="session.source">{{ session.source === 'codex' ? 'Codex' : 'Claude' }}</span>
+          <span class="status" :class="stateClass">{{ stateLabel }}</span>
+        </div>
       </div>
       <div class="meta-grid">
         <div class="meta-card">
@@ -229,6 +233,34 @@ const relativeTime = computed(() => {
   font-family: monospace;
 }
 
+.badges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.source-badge {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.source-badge.claude {
+  background: rgba(96, 165, 250, 0.14);
+  color: #93c5fd;
+  border: 1px solid rgba(96, 165, 250, 0.25);
+}
+
+.source-badge.codex {
+  background: rgba(74, 222, 128, 0.14);
+  color: #86efac;
+  border: 1px solid rgba(74, 222, 128, 0.25);
+}
+
 /* Status badges */
 .status {
   display: inline-flex;
@@ -259,6 +291,12 @@ const relativeTime = computed(() => {
   background: rgba(94, 234, 212, 0.14);
   color: #b8fff4;
   border-color: rgba(94, 234, 212, 0.26);
+}
+
+.status.inactive {
+  background: rgba(148, 163, 184, 0.14);
+  color: #cbd5e1;
+  border-color: rgba(148, 163, 184, 0.24);
 }
 
 .status.idle {

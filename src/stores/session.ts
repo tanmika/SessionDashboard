@@ -82,6 +82,7 @@ export const useSessionStore = defineStore('session', () => {
       waiting_permission: 0,
       waiting_user: 0,
       active: 0,
+      inactive: 0,
       idle: 0,
       ended: 0,
     }

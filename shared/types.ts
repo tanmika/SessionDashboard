@@ -12,12 +12,25 @@ export type HookEventName =
   | 'PostToolUse'
   | 'PostToolUseFailure'
 
+// ─── Codex Event Names ───
+
+export type CodexEventName =
+  | 'task_started'
+  | 'task_complete'
+  | 'user_message'
+  | 'agent_message'
+  | 'agent_reasoning'
+  | 'token_count'
+
+export type AnyEventName = HookEventName | CodexEventName
+
 // ─── Session State ───
 
 export type SessionState =
   | 'active'
   | 'waiting_permission'
   | 'waiting_user'
+  | 'inactive'          // Codex: turn complete, awaiting next user input
   | 'idle'
   | 'ended'
 
@@ -27,7 +40,8 @@ export const STATE_PRIORITY: Record<SessionState, number> = {
   waiting_permission: 1,
   waiting_user: 2,
   active: 3,
-  idle: 4,
+  inactive: 4,
+  idle: 5,
 }
 
 // Sort priority for column ordering (lower = shown first)
@@ -35,8 +49,9 @@ export const SORT_PRIORITY: Record<SessionState, number> = {
   waiting_permission: 0,
   waiting_user: 1,
   active: 2,
-  idle: 3,
-  ended: 4,
+  inactive: 3,
+  idle: 4,
+  ended: 5,
 }
 
 // ─── Incoming Hook Event (what Claude Code sends) ───
@@ -66,7 +81,7 @@ export interface HookEventPayload {
 export interface SessionEvent {
   id: number
   session_id: string
-  event_name: HookEventName
+  event_name: AnyEventName
   notification_type?: string
   tool_name?: string
   subagent_id?: string
@@ -99,6 +114,8 @@ export interface Session {
   alias: string
   // Watchlist pin (persisted in DB)
   pinned: boolean
+  // Session source
+  source: 'claude' | 'codex'
   // Runtime tracking (not persisted)
   active_tools: number
   active_subagents: number
@@ -124,4 +141,5 @@ export interface ApiResponse<T> {
 // ─── Constants ───
 
 export const IDLE_THRESHOLD_MS = 3 * 60 * 1000 // 3 minutes
+export const CODEX_ENDED_THRESHOLD_MS = 30 * 60 * 1000 // 30 min idle → ended (Codex only)
 export const SERVER_PORT = 3210

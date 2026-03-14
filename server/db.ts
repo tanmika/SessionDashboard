@@ -49,6 +49,7 @@ export function initDb(): Database.Database {
   // Safe migration: ADD COLUMN silently no-ops if column already exists (SQLite behavior)
   try { db.exec(`ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE sessions ADD COLUMN alias TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'`) } catch { /* already exists */ }
 
   return db
 }
