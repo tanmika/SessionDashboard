@@ -1,0 +1,197 @@
+import { createHash } from 'crypto'
+import { existsSync, openSync, readSync, closeSync, statSync } from 'fs'
+import { watch } from 'fs'
+
+type InsightCallback = (sessionId: string, content: string) => void
+
+interface WatchState {
+  sessionId: string
+  path: string
+  offset: number // bytes read so far
+  seenHashes: Set<string>
+  watcher: ReturnType<typeof watch> | null
+}
+
+// Extracts the content between ★ Insight markers
+const INSIGHT_START_RE = /`★ Insight\s*[─\-]+`/
+const INSIGHT_END_RE = /`[─\-]{10,}`/
+
+function extractInsightBlocks(text: string): string[] {
+  const lines = text.split('\n')
+  const results: string[] = []
+  let inBlock = false
+  let buffer: string[] = []
+
+  for (const line of lines) {
+    if (!inBlock && INSIGHT_START_RE.test(line)) {
+      inBlock = true
+      buffer = []
+    } else if (inBlock && INSIGHT_END_RE.test(line)) {
+      const content = buffer.join('\n').trim()
+      if (content) results.push(content)
+      inBlock = false
+      buffer = []
+    } else if (inBlock) {
+      buffer.push(line)
+    }
+  }
+
+  return results
+}
+
+// Fallback: extract significant text paragraphs (>150 chars)
+function extractSignificantText(text: string): string[] {
+  // Split on double newlines to get paragraphs
+  const paragraphs = text
+    .split(/\n\n+/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 150 && !p.startsWith('#') && !p.startsWith('```'))
+
+  return paragraphs.slice(0, 3) // max 3 paragraphs per message
+}
+
+function contentHash(content: string): string {
+  return createHash('md5').update(content).digest('hex').slice(0, 12)
+}
+
+export class TranscriptWatcher {
+  private watchers = new Map<string, WatchState>()
+  private onInsight: InsightCallback
+
+  constructor(onInsight: InsightCallback) {
+    this.onInsight = onInsight
+  }
+
+  // Register a transcript file to watch for a session
+  watch(sessionId: string, transcriptPath: string) {
+    if (!transcriptPath || this.watchers.has(sessionId)) return
+    if (!existsSync(transcriptPath)) return
+
+    const state: WatchState = {
+      sessionId,
+      path: transcriptPath,
+      offset: 0,
+      seenHashes: new Set(),
+      watcher: null,
+    }
+
+    this.watchers.set(sessionId, state)
+
+    // Initial parse of existing content
+    this.parseIncremental(state)
+
+    // Watch for new writes
+    try {
+      state.watcher = watch(transcriptPath, () => {
+        this.parseIncremental(state)
+      })
+    } catch {
+      // File watching might fail on some systems; fall back to no watching
+    }
+  }
+
+  // Update transcript path (called when a hook event provides a new path)
+  updatePath(sessionId: string, transcriptPath: string) {
+    const existing = this.watchers.get(sessionId)
+    if (existing) {
+      if (existing.path === transcriptPath) return
+      existing.watcher?.close()
+      this.watchers.delete(sessionId)
+    }
+    this.watch(sessionId, transcriptPath)
+  }
+
+  unwatch(sessionId: string) {
+    const state = this.watchers.get(sessionId)
+    if (state) {
+      state.watcher?.close()
+      this.watchers.delete(sessionId)
+    }
+  }
+
+  unwatchAll() {
+    for (const state of this.watchers.values()) {
+      state.watcher?.close()
+    }
+    this.watchers.clear()
+  }
+
+  private parseIncremental(state: WatchState) {
+    try {
+      const stat = statSync(state.path)
+      if (stat.size <= state.offset) return
+
+      const bytesToRead = stat.size - state.offset
+      const buf = Buffer.alloc(bytesToRead)
+      const fd = openSync(state.path, 'r')
+      const bytesRead = readSync(fd, buf, 0, bytesToRead, state.offset)
+      closeSync(fd)
+
+      state.offset += bytesRead
+      const newContent = buf.subarray(0, bytesRead).toString('utf-8')
+
+      // Process line by line (handle partial last line)
+      const lines = newContent.split('\n')
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+
+        try {
+          const obj = JSON.parse(trimmed)
+          this.processRecord(state, obj)
+        } catch {
+          // Not valid JSON (partial line at end), skip
+        }
+      }
+    } catch {
+      // File may have been deleted or is inaccessible
+    }
+  }
+
+  private processRecord(state: WatchState, obj: any) {
+    // Handle both formats:
+    // - type: "assistant" with message.content (project dir format)
+    // - Direct assistant messages
+    const recordType = obj.type
+
+    if (recordType !== 'assistant') return
+
+    const message = obj.message
+    if (!message) return
+
+    const content: any[] = message.content ?? []
+
+    for (const block of content) {
+      if (block.type !== 'text') continue
+      const text: string = block.text ?? ''
+      if (!text || text.length < 20) continue
+
+      this.extractAndEmit(state, text)
+    }
+  }
+
+  private extractAndEmit(state: WatchState, text: string) {
+    // Try insight blocks first
+    const insightBlocks = extractInsightBlocks(text)
+
+    if (insightBlocks.length > 0) {
+      for (const block of insightBlocks) {
+        const hash = contentHash(block)
+        if (state.seenHashes.has(hash)) continue
+        state.seenHashes.add(hash)
+        this.onInsight(state.sessionId, block)
+      }
+      return
+    }
+
+    // Fallback: significant text paragraphs
+    const paragraphs = extractSignificantText(text)
+    for (const para of paragraphs) {
+      const hash = contentHash(para)
+      if (state.seenHashes.has(hash)) continue
+      state.seenHashes.add(hash)
+      this.onInsight(state.sessionId, para)
+    }
+  }
+}

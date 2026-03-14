@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Session Dashboard - UI Design</title>
+    <style>
+      :root {
+        --bg: #0b1020;
+        --panel: rgba(16, 22, 45, 0.88);
+        --panel-2: rgba(20, 27, 55, 0.96);
+        --border: rgba(255, 255, 255, 0.08);
+        --text: #edf2ff;
+        --muted: #9ba7c6;
+        --accent: #7c9cff;
+        --accent-2: #5eead4;
+        --warn: #f59e0b;
+        --danger: #ef4444;
+        --idle: #64748b;
+        --ended: #94a3b8;
+        --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+        --radius: 18px;
+        --column-width: 360px;
+        --column-height: calc(100vh - 210px);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background:
+          radial-gradient(circle at top left, rgba(124, 156, 255, 0.18), transparent 30%),
+          radial-gradient(circle at top right, rgba(94, 234, 212, 0.12), transparent 24%),
+          linear-gradient(180deg, #0a0f1d 0%, #0b1020 100%);
+        color: var(--text);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      body {
+        padding: 24px;
+      }
+
+      .shell {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+
+      .topbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: stretch;
+        gap: 16px;
+      }
+
+      .hero,
+      .toolbar {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        box-shadow: var(--shadow);
+        border-radius: var(--radius);
+        backdrop-filter: blur(18px);
+      }
+
+      .hero {
+        flex: 1 1 520px;
+        padding: 20px 24px;
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+      }
+
+      .hero h1 {
+        margin: 0 0 8px;
+        font-size: 28px;
+        line-height: 1.1;
+      }
+
+      .hero p {
+        margin: 0;
+        max-width: 760px;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+
+      .hero-meta {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        gap: 10px;
+        min-width: 220px;
+      }
+
+      .kbd-hint {
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .toolbar {
+        flex: 0 1 360px;
+        padding: 18px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .toolbar-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .chip,
+      .pill,
+      .stat {
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .chip,
+      .pill {
+        padding: 8px 12px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .chip.active {
+        color: var(--text);
+        background: rgba(124, 156, 255, 0.14);
+        border-color: rgba(124, 156, 255, 0.38);
+      }
+
+      .search {
+        width: 100%;
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: rgba(5, 9, 20, 0.55);
+        color: var(--text);
+        outline: none;
+      }
+
+      .search::placeholder {
+        color: #6f7b9a;
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .stat {
+        padding: 14px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .stat .label {
+        color: var(--muted);
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .stat .value {
+        font-size: 28px;
+        font-weight: 700;
+      }
+
+      .board {
+        display: flex;
+        gap: 16px;
+        overflow-x: auto;
+        padding-bottom: 8px;
+        scroll-snap-type: x proximity;
+      }
+
+      .board::-webkit-scrollbar,
+      .insights::-webkit-scrollbar {
+        height: 10px;
+        width: 10px;
+      }
+
+      .board::-webkit-scrollbar-thumb,
+      .insights::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.12);
+        border-radius: 999px;
+      }
+
+      .column {
+        width: var(--column-width);
+        min-width: var(--column-width);
+        height: var(--column-height);
+        background: linear-gradient(180deg, rgba(16, 22, 45, 0.98), rgba(12, 17, 34, 0.94));
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        box-shadow: var(--shadow);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        scroll-snap-align: start;
+      }
+
+      .column-header {
+        padding: 18px 18px 16px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0));
+      }
+
+      .column-topline {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .column-title {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .column-title h2 {
+        margin: 0;
+        font-size: 17px;
+      }
+
+      .column-subtitle {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 12px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        border: 1px solid transparent;
+        white-space: nowrap;
+      }
+
+      .status.waiting-permission {
+        background: rgba(245, 158, 11, 0.14);
+        color: #ffd38a;
+        border-color: rgba(245, 158, 11, 0.32);
+      }
+
+      .status.waiting-user {
+        background: rgba(124, 156, 255, 0.16);
+        color: #c8d5ff;
+        border-color: rgba(124, 156, 255, 0.34);
+      }
+
+      .status.active {
+        background: rgba(94, 234, 212, 0.14);
+        color: #b8fff4;
+        border-color: rgba(94, 234, 212, 0.26);
+      }
+
+      .status.idle {
+        background: rgba(100, 116, 139, 0.18);
+        color: #d6deed;
+        border-color: rgba(148, 163, 184, 0.22);
+      }
+
+      .status.ended {
+        background: rgba(148, 163, 184, 0.16);
+        color: #dbe5f3;
+        border-color: rgba(148, 163, 184, 0.24);
+      }
+
+      .meta-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+
+      .meta-card {
+        display: grid;
+        gap: 4px;
+        padding: 12px 13px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+      }
+
+      .meta-label {
+        font-size: 11px;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+        text-transform: uppercase;
+      }
+
+      .meta-value {
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .insights {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px 16px 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .insight {
+        display: grid;
+        gap: 10px;
+        padding: 14px;
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+      }
+
+      .insight-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .insight-time {
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .insight-tag {
+        font-size: 11px;
+        padding: 5px 8px;
+        border-radius: 999px;
+        background: rgba(124, 156, 255, 0.14);
+        color: #cad7ff;
+        border: 1px solid rgba(124, 156, 255, 0.24);
+      }
+
+      .insight p {
+        margin: 0;
+        line-height: 1.65;
+        color: #e7ecfa;
+        font-size: 14px;
+      }
+
+      .empty-state {
+        margin-top: auto;
+        min-height: 180px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        color: var(--muted);
+        border: 1px dashed rgba(255, 255, 255, 0.08);
+        border-radius: 16px;
+        padding: 18px;
+        background: rgba(255, 255, 255, 0.02);
+      }
+
+      .footer-note {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      @media (max-width: 1200px) {
+        .stats {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 900px) {
+        body {
+          padding: 16px;
+        }
+
+        .hero {
+          flex-direction: column;
+        }
+
+        .stats {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <section class="topbar">
+        <div class="hero">
+          <div>
+            <h1>Session Dashboard</h1>
+            <p>
+              每个 session 独占一列：顶部固定展示当前状态和上下文，列体按倒序完整展示 insight，帮助你在多会话并行时同时掌握“谁在等你、谁在推进、谁还没出第一条 insight”。
+            </p>
+          </div>
+          <div class="hero-meta">
+            <div class="kbd-hint">
+              <strong>交互提示</strong><br />
+              鼠标滚轮：控制列内纵向滚动<br />
+              键盘：<code>Q / E</code> 或 <code>← / →</code> 横向移动列
+            </div>
+            <div class="footer-note">
+              当前为 HTML 设计稿。重点验证：固定列宽、统一列高、顶部状态区、列体倒序 insight 与横向浏览节奏。
+            </div>
+          </div>
+        </div>
+
+        <aside class="toolbar">
+          <div class="toolbar-row">
+            <span class="chip active">All</span>
+            <span class="chip">Need Attention</span>
+            <span class="chip">Active</span>
+            <span class="chip">Idle</span>
+            <span class="chip">Ended</span>
+          </div>
+          <div class="toolbar-row">
+            <span class="pill">cwd: session-dashboard</span>
+            <span class="pill">3m idle threshold</span>
+          </div>
+          <input class="search" placeholder="搜索 session / cwd basename / short session id" />
+        </aside>
+      </section>
+
+      <section class="stats">
+        <article class="stat">
+          <span class="label">Sessions</span>
+          <span class="value">6</span>
+        </article>
+        <article class="stat">
+          <span class="label">Waiting Permission</span>
+          <span class="value">1</span>
+        </article>
+        <article class="stat">
+          <span class="label">Waiting User</span>
+          <span class="value">1</span>
+        </article>
+        <article class="stat">
+          <span class="label">Active</span>
+          <span class="value">3</span>
+        </article>
+        <article class="stat">
+          <span class="label">Idle / Ended</span>
+          <span class="value">1 / 1</span>
+        </article>
+      </section>
+
+      <section class="board" aria-label="Session columns">
+        <article class="column">
+          <header class="column-header">
+            <div class="column-topline">
+              <div class="column-title">
+                <h2>session-dashboard · a1f3</h2>
+                <div class="column-subtitle">cwd basename + short session id</div>
+              </div>
+              <span class="status waiting-permission">Waiting Permission</span>
+            </div>
+            <div class="meta-grid">
+              <div class="meta-card">
+                <span class="meta-label">Recently active</span>
+                <span class="meta-value">12s ago</span>
+              </div>
+              <div class="meta-card">
+                <span class="meta-label">Context</span>
+                <span class="meta-value">/Users/tanmika/WebProject/session-dashboard</span>
+              </div>
+            </div>
+          </header>
+          <div class="insights">
+            <article class="insight">
+              <div class="insight-head">
+                <span class="insight-tag">Latest Insight</span>
+                <span class="insight-time">12s ago</span>
+              </div>
+              <p>
+                当前需要权限批准后才能继续推进原型实现：已切到会话列式看板模型，下一步将验证固定列宽与横向滚动在多列情况下是否仍能保持可读性和浏览节奏。
+              </p>
+            </article>
+            <article class="insight">
+              <div class="insight-head">
+                <span class="insight-tag">Insight</span>
+                <span class="insight-time">36s ago</span>
+              </div>
+              <p>
+                列体只放 insight 而不混放完整事件流，可以显著降低主视图噪音；等待权限、等待用户、空闲等状态集中在顶部固定区表达，会更利于横向比较多个 session 的当前状态。
+              </p>
+            </article>
+            <article class="insight">
+              <div class="insight-head">
+                <span class="insight-tag">Insight</span>
+                <span class="insight-time">2m ago</span>
+              </div>
+              <p>
+                该列目前仍需要你介入，因此被排在最左侧。后续如果进入 Active 或 Idle，列会立即按主状态优先级重新排序，但实现上会预留可配置策略，以便未来减少页面跳动。
+              </p>
+            </article>
+          </div>
+        </article>
+
+        <article class="column">
+          <header class="column-header">
+            <div class="column-topline">
+              <div class="column-title">
+                <h2>lens-blur-web · c204</h2>
+                <div class="column-subtitle">当前等待用户反馈</div>
+              </div>
+              <span class="status waiting-user">Waiting User</span>
+            </div>
+            <div class="meta-grid">
+              <div class="meta-card">
+                <span class="meta-label">Recently active</span>
+                <span class="meta-value">29s ago</span>
+              </div>
+              <div class="meta-card">
+                <span class="meta-label">Context</span>
+                <span class="meta-value">/Users/tanmika/PixCake/tsinpaint</span>
+              </div>
+            </div>
+          </header>
+          <div class="insights">
+            <article class="insight">
+              <div class="insight-head">
+                <span class="insight-tag">Latest Insight</span>
+                <span class="insight-time">29s ago</span>
+              </div>
+              <p>
+                这个 session 当前没有被权限阻塞，但它已经进入等待用户确认的阶段，因此顶部优先展示 Waiting User。主体继续保留完整 insight 演进，方便你在不点详情的情况下理解此前决策过程。
+              </p>
+            </article>
+            <article class="insight">
+              <div class="insight-head">
+                <span class="insight-tag">Insight</span>
+                <span class="insight-time">1m ago</span>
+              </div>
+              <p>
+                横向工作台的价值在于把不同 session 当作并排观察的时间窗：顶部固定的是“现在”，下面堆叠的是“最近怎么走到现在”。这比传统列表更适合多终端并行时的巡视场景。
+              </p>
+            </article>
+            <article class="insight">
+              <div class="insight-head">
+                <span class="insight-tag">Insight</span>
+                <span class="insight-time">3m ago</span>
+              </div>
+              <p>
+                若用户在当前阶段长时间未回答，主状态依然保持 Waiting User，而不是退回普通 Active；这样在总览层面，“需要你操作的 session”会持续排在更靠前的位置。
+              </p>
+            </article>
+          </div>
+        </article>
+
+        <article class="column">
+          <header class="column-header">
+            <div class="column-topline">
+              <div class="column-title">
+                <h2>session-dashboard · d88b</h2>
+                <div class="column-subtitle">主列持续推进中</div>
+              </div>
+              <span class="status active">Active</span>
+            </div>
+            <div class="meta-grid">
+              <div class="meta-card">
+                <span class="meta-label">Recently active</span>
+                <span class="meta-value">8s ago</span>
+              </div>
+              <div class="meta-card">
+                <span class="meta-label">Context</span>
+                <span class="meta-value">/Users/tanmika/WebProject/session-dashboard</span>
+              </div>
+            </div>
+          </header>
+          <div class="insights">
+            <article class="insight">
+              <div class="insight-head">
+                <span class="insight-tag">Latest Insight</span>
+                <span class="insight-time">8s ago</span>
+              </div>
+              <p>
+                当前列已经进入 Active 状态，说明近期仍有活动事件持续出现。因为主列主体只展示 insight，所以你能直接看到推进脉络，而不需要被工具调用、子代理事件等噪音分散注意力。
+              </p>
+            </article>
+            <article class="insight">
+              <div class="insight-head">
+                <span class="insight-tag">Insight</span>
+                <span class="insight-time">1m ago</span>
+              </div>
+              <p>
+                设计稿阶段保留完整 insight 非常有价值：它能帮你判断列宽是否足以支撑真实阅读，而不是只在极简占位文本下看起来舒服，真正实现时却因为长内容而崩掉排版节奏。
+              </p>
+            </article>
+            <article class="insight">
+              <div class="insight-head">
+                <span class="insight-tag">Insight</span>
+                <span class="insight-time">4m ago</span>
+              </div>
+              <p>
+                详情页仍然保留完整事件时间线，这是为了让主列可以聚焦 insight 演进，同时在需要排查时仍然保有足够的诊断入口，不至于让观察台变成只会展示摘要的死面板。
+              </p>
+            </article>
+          </div>
+        </article>
+
+        <article class="column">
+          <header class="column-header">
+            <div class="column-topline">
+              <div class="column-title">
+                <h2>workspace-sync · e019</h2>
+                <div class="column-subtitle">3 分钟阈值后判定空闲</div>
+              </div>
+              <span class="status idle">Idle</span>
+            </div>
+            <div class="meta-grid">
+              <div class="meta-card">
+                <span class="meta-label">Recently active</span>
+                <span class="meta-value">4m ago</span>
+              </div>
+              <div class="meta-card">
+                <span class="meta-label">Context</span>
+                <span class="meta-value">/Users/tanmika/WebProject/TanmiWorkspace</span>
+              </div>
+            </div>
+          </header>
+          <div class="insights">
+            <article class="insight">
+              <div class="insight-head">
+                <span class="insight-tag">Latest Insight</span>
+                <span class="insight-time">4m ago</span>
+              </div>
+              <p>
+                这个 session 还没有结束，也没有等待权限或等待用户的强信号，但已经超过 3 分钟没有新活动，因此顶部显示 Idle / No Recent Activity。这里的文案表达的是观察层推断，而不是系统确认的异常状态。
+              </p>
+            </article>
+            <article class="insight">
+              <div class="insight-head">
+                <span class="insight-tag">Insight</span>
+                <span class="insight-time">6m ago</span>
+              </div>
+              <p>
+                Idle 状态的价值主要在于让你快速发现“很久没动”的 session，再决定是否进入详情排查，而不是在主列直接把它定义成卡死。这样更符合 hooks 数据本身的语义边界。
+              </p>
+            </article>
+          </div>
+        </article>
+
+        <article class="column">
+          <header class="column-header">
+            <div class="column-topline">
+              <div class="column-title">
+                <h2>photo-export · f72a</h2>
+                <div class="column-subtitle">还没产出第一条 insight</div>
+              </div>
+              <span class="status active">Active</span>
+            </div>
+            <div class="meta-grid">
+              <div class="meta-card">
+                <span class="meta-label">Recently active</span>
+                <span class="meta-value">14s ago</span>
+              </div>
+              <div class="meta-card">
+                <span class="meta-label">Context</span>
+                <span class="meta-value">/Users/tanmika/WebProject/photo-export</span>
+              </div>
+            </div>
+          </header>
+          <div class="insights">
+            <div class="empty-state">
+              Waiting for first insight
+            </div>
+          </div>
+        </article>
+
+        <article class="column">
+          <header class="column-header">
+            <div class="column-topline">
+              <div class="column-title">
+                <h2>archive-cleanup · a903</h2>
+                <div class="column-subtitle">会话已结束</div>
+              </div>
+              <span class="status ended">Ended</span>
+            </div>
+            <div class="meta-grid">
+              <div class="meta-card">
+                <span class="meta-label">Recently active</span>
+                <span class="meta-value">19m ago</span>
+              </div>
+              <div class="meta-card">
+                <span class="meta-label">Context</span>
+                <span class="meta-value">/Users/tanmika/WebProject/archive-cleanup</span>
+              </div>
+            </div>
+          </header>
+          <div class="insights">
+            <article class="insight">
+              <div class="insight-head">
+                <span class="insight-tag">Latest Insight</span>
+                <span class="insight-time">19m ago</span>
+              </div>
+              <p>
+                这个 session 已经结束，因此仍然保留在看板中，但会排到更靠后的位置。保留 ended 列的意义是让你在总览阶段仍能快速回忆刚结束的工作内容，而不是立刻从视野中消失。
+              </p>
+            </article>
+          </div>
+        </article>
+      </section>
+    </div>
+  </body>
+</html>
