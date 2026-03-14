@@ -187,6 +187,22 @@ export const useSessionStore = defineStore('session', () => {
     searchQuery.value = query
   }
 
+  async function setAlias(sessionId: string, alias: string) {
+    // Optimistic update
+    const s = sessions.value.get(sessionId)
+    if (s) {
+      s.alias = alias.trim()
+      s.display_name = alias.trim() || s.display_name
+    }
+
+    await fetch(`/api/sessions/${sessionId}/alias`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alias }),
+    })
+    // WS session_update will sync back the canonical display_name
+  }
+
   async function setPinned(sessionId: string, pinned: boolean) {
     // Optimistic update
     const s = sessions.value.get(sessionId)
@@ -216,6 +232,7 @@ export const useSessionStore = defineStore('session', () => {
     selectSession,
     setFilter,
     setSearch,
+    setAlias,
     setPinned,
   }
 })

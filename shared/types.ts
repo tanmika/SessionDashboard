@@ -95,6 +95,8 @@ export interface Session {
   last_activity: string // ISO timestamp
   created_at: string
   insights: Insight[]
+  // Custom alias (persisted in DB, overrides generated display_name when set)
+  alias: string
   // Watchlist pin (persisted in DB)
   pinned: boolean
   // Runtime tracking (not persisted)

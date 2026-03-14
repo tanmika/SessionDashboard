@@ -33,6 +33,7 @@ export class SessionManager {
   private stmtInsertSession: Database.Statement
   private stmtUpdateSession: Database.Statement
   private stmtSetPinned: Database.Statement
+  private stmtSetAlias: Database.Statement
   private stmtInsertEvent: Database.Statement
   private stmtInsertInsight: Database.Statement
   private stmtGetSessions: Database.Statement
@@ -54,6 +55,7 @@ export class SessionManager {
       WHERE session_id = ?
     `)
     this.stmtSetPinned = db.prepare(`UPDATE sessions SET pinned = ? WHERE session_id = ?`)
+    this.stmtSetAlias = db.prepare(`UPDATE sessions SET alias = ? WHERE session_id = ?`)
     this.stmtInsertEvent = db.prepare(`
       INSERT INTO events (session_id, event_name, notification_type, tool_name, subagent_id, timestamp, raw_payload)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -86,12 +88,13 @@ export class SessionManager {
       const insights = this.stmtGetInsights.all(row.session_id) as Insight[]
       const session: Session = {
         session_id: row.session_id,
-        display_name: this.makeDisplayName(row.cwd, row.session_id),
+        display_name: this.makeDisplayName(row.cwd, row.session_id, row.alias),
         cwd: row.cwd,
         transcript_path: row.transcript_path,
         state: row.state as SessionState,
         last_activity: row.last_activity,
         created_at: row.created_at,
+        alias: row.alias || '',
         pinned: row.pinned === 1,
         insights,
         active_tools: 0,
@@ -129,7 +132,7 @@ export class SessionManager {
         this.transcriptWatcher.updatePath(sid, payload.transcript_path)
       }
     }
-    session.display_name = this.makeDisplayName(session.cwd, sid)
+    session.display_name = this.makeDisplayName(session.cwd, sid, session.alias)
 
     // Persist event
     this.stmtInsertEvent.run(
@@ -325,6 +328,18 @@ export class SessionManager {
     return this.sessions.size
   }
 
+  setSessionAlias(sessionId: string, alias: string): Session | null {
+    const session = this.sessions.get(sessionId)
+    if (!session) return null
+
+    session.alias = alias.trim()
+    session.display_name = this.makeDisplayName(session.cwd, sessionId, session.alias)
+    this.stmtSetAlias.run(session.alias, sessionId)
+    this.broadcast({ type: 'session_update', data: session })
+
+    return session
+  }
+
   setSessionPinned(sessionId: string, pinned: boolean): Session | null {
     const session = this.sessions.get(sessionId)
     if (!session) return null
@@ -352,6 +367,7 @@ export class SessionManager {
       state: 'active',
       last_activity: timestamp,
       created_at: timestamp,
+      alias: '',
       pinned: false,
       insights: [],
       active_tools: 0,
@@ -377,7 +393,8 @@ export class SessionManager {
     return session
   }
 
-  private makeDisplayName(cwd: string, sessionId: string): string {
+  private makeDisplayName(cwd: string, sessionId: string, alias?: string): string {
+    if (alias) return alias
     const base = cwd ? basename(cwd) : 'unknown'
     const short = sessionId.slice(0, 4)
     return `${base} · ${short}`

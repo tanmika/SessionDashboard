@@ -5,6 +5,30 @@ import type { SessionEvent } from '../../shared/types'
 import { formatRelativeTime } from '../utils/time'
 
 const store = useSessionStore()
+
+// Alias inline edit
+const isEditingAlias = ref(false)
+const aliasEditValue = ref('')
+
+function startAliasEdit() {
+  aliasEditValue.value = store.selectedSession?.alias || ''
+  isEditingAlias.value = true
+}
+
+function confirmAliasEdit() {
+  isEditingAlias.value = false
+  if (store.selectedSession) {
+    store.setAlias(store.selectedSession.session_id, aliasEditValue.value)
+  }
+}
+
+function cancelAliasEdit() {
+  isEditingAlias.value = false
+}
+
+watch(() => store.selectedSessionId, () => {
+  isEditingAlias.value = false
+})
 const events = ref<SessionEvent[]>([])
 const loading = ref(false)
 const loadError = ref(false)
@@ -52,6 +76,27 @@ watch(
       <section class="info-section">
         <h3>Info</h3>
         <div class="info-grid">
+          <div class="info-item alias-item">
+            <span class="info-label">Alias</span>
+            <div class="alias-row">
+              <input
+                v-if="isEditingAlias"
+                class="alias-input"
+                v-model="aliasEditValue"
+                @keydown.enter="confirmAliasEdit"
+                @keydown.escape="cancelAliasEdit"
+                @blur="confirmAliasEdit"
+                autofocus
+                placeholder="输入别名，回车保存…"
+              />
+              <template v-else>
+                <span class="info-value alias-value" :class="{ placeholder: !store.selectedSession.alias }">
+                  {{ store.selectedSession.alias || '未设置' }}
+                </span>
+                <button class="alias-edit-btn" @click="startAliasEdit">编辑</button>
+              </template>
+            </div>
+          </div>
           <div class="info-item">
             <span class="info-label">Session ID</span>
             <span class="info-value mono">{{ store.selectedSession.session_id }}</span>
@@ -325,6 +370,50 @@ watch(
   padding: 2px 8px;
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.05);
+}
+
+.alias-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.alias-value {
+  flex: 1;
+}
+
+.alias-value.placeholder {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.alias-edit-btn {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.alias-edit-btn:hover {
+  background: rgba(124, 156, 255, 0.1);
+  border-color: rgba(124, 156, 255, 0.3);
+  color: var(--accent);
+}
+
+.alias-input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 4px 8px;
+  outline: none;
 }
 
 .empty-hint {

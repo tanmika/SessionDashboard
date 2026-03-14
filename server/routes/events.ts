@@ -45,6 +45,21 @@ export function createEventRoutes(sessionManager: SessionManager): Router {
     res.json({ ok: true, data: events })
   })
 
+  // Set or clear session alias
+  router.patch('/sessions/:id/alias', (req, res) => {
+    const { alias } = req.body
+    if (typeof alias !== 'string') {
+      res.status(400).json({ ok: false, error: 'Missing or invalid alias field (string required)' })
+      return
+    }
+    const session = sessionManager.setSessionAlias(req.params.id, alias)
+    if (!session) {
+      res.status(404).json({ ok: false, error: 'Session not found' })
+      return
+    }
+    res.json({ ok: true, data: session })
+  })
+
   // Pin / unpin a session
   router.patch('/sessions/:id/pin', (req, res) => {
     const { pinned } = req.body
