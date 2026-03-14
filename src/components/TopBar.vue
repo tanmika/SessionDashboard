@@ -6,7 +6,8 @@ const store = useSessionStore()
 
 const filters: { label: string; value: SessionState | 'all' }[] = [
   { label: 'All', value: 'all' },
-  { label: 'Need Attention', value: 'waiting_permission' },
+  { label: 'Waiting Permission', value: 'waiting_permission' },
+  { label: 'Waiting User', value: 'waiting_user' },
   { label: 'Active', value: 'active' },
   { label: 'Idle', value: 'idle' },
   { label: 'Ended', value: 'ended' },

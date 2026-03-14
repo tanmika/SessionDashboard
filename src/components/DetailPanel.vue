@@ -7,21 +7,26 @@ import { formatRelativeTime } from '../utils/time'
 const store = useSessionStore()
 const events = ref<SessionEvent[]>([])
 const loading = ref(false)
+const loadError = ref(false)
 
 watch(
   () => store.selectedSessionId,
   async (id) => {
     if (!id) {
       events.value = []
+      loadError.value = false
       return
     }
     loading.value = true
+    loadError.value = false
     try {
       const res = await fetch(`/api/sessions/${id}/events`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json()
       events.value = json.data || []
     } catch {
       events.value = []
+      loadError.value = true
     }
     loading.value = false
   },
@@ -73,7 +78,10 @@ watch(
             :key="insight.id"
             class="timeline-item insight-item"
           >
-            <span class="timeline-time">{{ formatRelativeTime(insight.timestamp) }}</span>
+            <div class="insight-meta">
+              <span class="timeline-time">{{ formatRelativeTime(insight.timestamp) }}</span>
+              <span class="source-badge" :class="insight.source">{{ insight.source }}</span>
+            </div>
             <p>{{ insight.content }}</p>
           </div>
           <div v-if="store.selectedSession.insights.length === 0" class="empty-hint">
@@ -86,6 +94,9 @@ watch(
       <section class="info-section">
         <h3>Event Timeline ({{ events.length }})</h3>
         <div v-if="loading" class="empty-hint">Loading...</div>
+        <div v-else-if="loadError" class="empty-hint error-hint">
+          Failed to load events
+        </div>
         <div v-else class="timeline">
           <div
             v-for="event in events"
@@ -222,11 +233,41 @@ watch(
   color: var(--muted);
 }
 
+.insight-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.source-badge {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.source-badge.transcript {
+  background: rgba(94, 234, 212, 0.12);
+  color: #7fffed;
+  border: 1px solid rgba(94, 234, 212, 0.2);
+}
+
+.source-badge.hook {
+  background: rgba(124, 156, 255, 0.12);
+  color: #a5bdff;
+  border: 1px solid rgba(124, 156, 255, 0.2);
+}
+
 .insight-item p {
   margin: 6px 0 0;
   font-size: 13px;
   line-height: 1.6;
   color: #e7ecfa;
+}
+
+.error-hint {
+  color: var(--danger) !important;
 }
 
 .event-item {
