@@ -32,6 +32,7 @@ export class SessionManager {
   // Prepared statements
   private stmtInsertSession: Database.Statement
   private stmtUpdateSession: Database.Statement
+  private stmtSetPinned: Database.Statement
   private stmtInsertEvent: Database.Statement
   private stmtInsertInsight: Database.Statement
   private stmtGetSessions: Database.Statement
@@ -52,6 +53,7 @@ export class SessionManager {
       UPDATE sessions SET state = ?, last_activity = ?, cwd = ?, transcript_path = ?
       WHERE session_id = ?
     `)
+    this.stmtSetPinned = db.prepare(`UPDATE sessions SET pinned = ? WHERE session_id = ?`)
     this.stmtInsertEvent = db.prepare(`
       INSERT INTO events (session_id, event_name, notification_type, tool_name, subagent_id, timestamp, raw_payload)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -90,6 +92,7 @@ export class SessionManager {
         state: row.state as SessionState,
         last_activity: row.last_activity,
         created_at: row.created_at,
+        pinned: row.pinned === 1,
         insights,
         active_tools: 0,
         active_subagents: 0,
@@ -322,6 +325,17 @@ export class SessionManager {
     return this.sessions.size
   }
 
+  setSessionPinned(sessionId: string, pinned: boolean): Session | null {
+    const session = this.sessions.get(sessionId)
+    if (!session) return null
+
+    session.pinned = pinned
+    this.stmtSetPinned.run(pinned ? 1 : 0, sessionId)
+    this.broadcast({ type: 'session_pin_update', session_id: sessionId, pinned })
+
+    return session
+  }
+
   // ─── Helpers ───
 
   private createSession(
@@ -338,6 +352,7 @@ export class SessionManager {
       state: 'active',
       last_activity: timestamp,
       created_at: timestamp,
+      pinned: false,
       insights: [],
       active_tools: 0,
       active_subagents: 0,

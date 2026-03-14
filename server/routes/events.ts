@@ -45,6 +45,21 @@ export function createEventRoutes(sessionManager: SessionManager): Router {
     res.json({ ok: true, data: events })
   })
 
+  // Pin / unpin a session
+  router.patch('/sessions/:id/pin', (req, res) => {
+    const { pinned } = req.body
+    if (typeof pinned !== 'boolean') {
+      res.status(400).json({ ok: false, error: 'Missing or invalid pinned field (boolean required)' })
+      return
+    }
+    const session = sessionManager.setSessionPinned(req.params.id, pinned)
+    if (!session) {
+      res.status(404).json({ ok: false, error: 'Session not found' })
+      return
+    }
+    res.json({ ok: true, data: session })
+  })
+
   // Add insight (for testing / transcript parser)
   router.post('/sessions/:id/insights', (req, res) => {
     const { content, source } = req.body

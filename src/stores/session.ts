@@ -19,7 +19,8 @@ export const useSessionStore = defineStore('session', () => {
   const frozenOrder = ref<string[] | null>(null)
 
   const sortedSessions = computed(() => {
-    let list = Array.from(sessions.value.values())
+    // Only show pinned sessions on the board
+    let list = Array.from(sessions.value.values()).filter((s) => s.pinned === true)
 
     // Filter by state
     if (filterState.value === 'needs_attention') {
@@ -59,6 +60,18 @@ export const useSessionStore = defineStore('session', () => {
       return new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
     })
 
+    return list
+  })
+
+  // All sessions sorted for SessionPicker (no pinned filter)
+  const allSortedSessions = computed(() => {
+    const list = Array.from(sessions.value.values())
+    list.sort((a, b) => {
+      const pa = SORT_PRIORITY[a.state]
+      const pb = SORT_PRIORITY[b.state]
+      if (pa !== pb) return pa - pb
+      return new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
+    })
     return list
   })
 
@@ -135,12 +148,21 @@ export const useSessionStore = defineStore('session', () => {
         }
         break
 
-      case 'new_insight':
+      case 'new_insight': {
         const session = sessions.value.get(msg.session_id)
         if (session) {
           session.insights.unshift(msg.insight)
         }
         break
+      }
+
+      case 'session_pin_update': {
+        const session = sessions.value.get(msg.session_id)
+        if (session) {
+          session.pinned = msg.pinned
+        }
+        break
+      }
     }
   }
 
@@ -165,6 +187,19 @@ export const useSessionStore = defineStore('session', () => {
     searchQuery.value = query
   }
 
+  async function setPinned(sessionId: string, pinned: boolean) {
+    // Optimistic update
+    const s = sessions.value.get(sessionId)
+    if (s) s.pinned = pinned
+
+    await fetch(`/api/sessions/${sessionId}/pin`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinned }),
+    })
+    // WS broadcast will also sync across tabs
+  }
+
   return {
     sessions,
     selectedSessionId,
@@ -173,6 +208,7 @@ export const useSessionStore = defineStore('session', () => {
     wsConnected,
     frozenOrder,
     sortedSessions,
+    allSortedSessions,
     stateCounts,
     selectedSession,
     connect,
@@ -180,5 +216,6 @@ export const useSessionStore = defineStore('session', () => {
     selectSession,
     setFilter,
     setSearch,
+    setPinned,
   }
 })

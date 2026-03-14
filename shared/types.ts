@@ -95,6 +95,8 @@ export interface Session {
   last_activity: string // ISO timestamp
   created_at: string
   insights: Insight[]
+  // Watchlist pin (persisted in DB)
+  pinned: boolean
   // Runtime tracking (not persisted)
   active_tools: number
   active_subagents: number
@@ -107,6 +109,7 @@ export type WsMessage =
   | { type: 'session_update'; data: Session }
   | { type: 'session_removed'; session_id: string }
   | { type: 'new_insight'; session_id: string; insight: Insight }
+  | { type: 'session_pin_update'; session_id: string; pinned: boolean }
 
 // ─── API Response ───
 
