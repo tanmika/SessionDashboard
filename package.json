@@ -10,7 +10,8 @@
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
     "setup:hooks": "tsx scripts/setup-hooks.ts",
-    "setup:codex": "tsx scripts/setup-codex.ts"
+    "setup:codex": "tsx scripts/setup-codex.ts",
+    "insights": "tsx scripts/read-insights.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",

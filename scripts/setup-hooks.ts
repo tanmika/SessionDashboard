@@ -14,6 +14,7 @@ import { fileURLToPath } from 'url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json')
 const HOOK_SCRIPT = path.resolve(__dirname, '..', 'hooks', 'session-hook.sh')
+const SESSION_ID_HOOK_SCRIPT = path.resolve(__dirname, '..', 'hooks', 'session-id-hook.sh')
 
 const REQUIRED_EVENTS = [
   'SessionStart',
@@ -26,15 +27,15 @@ const REQUIRED_EVENTS = [
   'SubagentStop',
 ] as const
 
-/** Check both hook-group format and direct format for session-hook.sh */
-function hasSessionHook(eventHooks: unknown[]): boolean {
+/** Check if a specific hook script is already registered in an event's hook list */
+function hasHookScript(eventHooks: unknown[], scriptName: string): boolean {
   return eventHooks.some((item: any) => {
     // Direct format: { type, command }
-    if (typeof item?.command === 'string' && item.command.includes('session-hook.sh')) return true
+    if (typeof item?.command === 'string' && item.command.includes(scriptName)) return true
     // Hook-group format: { hooks: [{ type, command }] }
     if (Array.isArray(item?.hooks)) {
       return item.hooks.some(
-        (h: any) => typeof h?.command === 'string' && h.command.includes('session-hook.sh')
+        (h: any) => typeof h?.command === 'string' && h.command.includes(scriptName)
       )
     }
     return false
@@ -72,12 +73,28 @@ const skipped: string[] = []
 
 for (const event of REQUIRED_EVENTS) {
   const existing: unknown[] = Array.isArray(settings.hooks[event]) ? settings.hooks[event] : []
-  if (hasSessionHook(existing)) {
+  if (hasHookScript(existing, 'session-hook.sh')) {
     skipped.push(event)
   } else {
     settings.hooks[event] = [...existing, newEntry]
     added.push(event)
   }
+}
+
+// ─── Session ID injection hook (SessionStart only) ───
+
+const sessionIdEntry = {
+  hooks: [{ type: 'command', command: `bash ${SESSION_ID_HOOK_SCRIPT}` }],
+}
+
+const sessionStartHooks: unknown[] = Array.isArray(settings.hooks.SessionStart) ? settings.hooks.SessionStart : []
+const hasSessionIdHook = hasHookScript(sessionStartHooks, 'session-id-hook.sh')
+
+if (!hasSessionIdHook) {
+  settings.hooks.SessionStart = [...sessionStartHooks, sessionIdEntry]
+  added.push('SessionStart(session-id)')
+} else {
+  skipped.push('SessionStart(session-id)')
 }
 
 // ─── Report ───
