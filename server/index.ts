@@ -2,7 +2,7 @@ import express from 'express'
 import { createServer } from 'http'
 import { resolve } from 'path'
 import { existsSync } from 'fs'
-import { SERVER_PORT } from '../shared/types.js'
+import { getPort } from '../shared/config.js'
 import { initDb } from './db.js'
 import { createWsServer } from './ws.js'
 import { createEventRoutes } from './routes/events.js'
@@ -45,7 +45,17 @@ if (existsSync(distDir)) {
   })
 }
 
-httpServer.listen(SERVER_PORT, () => {
-  console.log(`[session-dashboard] server running on http://localhost:${SERVER_PORT}`)
+const port = getPort()
+httpServer.listen(port, () => {
+  console.log(`[session-dashboard] server running on http://localhost:${port}`)
   console.log(`[session-dashboard] ${sessionManager.getSessionCount()} sessions restored from db`)
 })
+
+// Graceful shutdown
+function shutdown() {
+  console.log('[session-dashboard] shutting down...')
+  sessionManager.destroy()
+  httpServer.close(() => process.exit(0))
+}
+process.on('SIGTERM', shutdown)
+process.on('SIGINT', shutdown)

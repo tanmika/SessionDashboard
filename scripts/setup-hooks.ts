@@ -1,6 +1,6 @@
 /**
  * Session Dashboard — Hook Setup Script
- * Usage: npm run setup:hooks
+ * Usage: npm run setup:hooks  (or called by CLI `session-dashboard init`)
  *
  * Installs the required Claude Code hooks into ~/.claude/settings.json.
  * Safe to run multiple times (idempotent).
@@ -10,11 +10,6 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { fileURLToPath } from 'url'
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json')
-const HOOK_SCRIPT = path.resolve(__dirname, '..', 'hooks', 'session-hook.sh')
-const SESSION_ID_HOOK_SCRIPT = path.resolve(__dirname, '..', 'hooks', 'session-id-hook.sh')
 
 const REQUIRED_EVENTS = [
   'SessionStart',
@@ -42,79 +37,95 @@ function hasHookScript(eventHooks: unknown[], scriptName: string): boolean {
   })
 }
 
-// ─── Read settings ───
+export function setupHooks(options?: { packageRoot?: string }) {
+  const packageRoot = options?.packageRoot || path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)), '..'
+  )
+  const SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json')
+  const HOOK_SCRIPT = path.resolve(packageRoot, 'hooks', 'session-hook.sh')
+  const SESSION_ID_HOOK_SCRIPT = path.resolve(packageRoot, 'hooks', 'session-id-hook.sh')
 
-let settings: any = {}
-let existed = true
+  // ─── Read settings ───
 
-if (!fs.existsSync(SETTINGS_PATH)) {
-  existed = false
-  console.log(`\n  Creating new settings file at:\n  ${SETTINGS_PATH}\n`)
-} else {
-  try {
-    settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'))
-  } catch (e) {
-    console.error(`\n  ✗ Failed to parse ${SETTINGS_PATH}:`, e)
-    process.exit(1)
-  }
-}
+  let settings: any = {}
+  let existed = true
 
-if (!settings.hooks) settings.hooks = {}
-
-// New hook group entry to append (matches existing settings.json format)
-const newEntry = {
-  hooks: [{ type: 'command', command: `bash ${HOOK_SCRIPT}` }],
-}
-
-// ─── Check & add ───
-
-const added: string[] = []
-const skipped: string[] = []
-
-for (const event of REQUIRED_EVENTS) {
-  const existing: unknown[] = Array.isArray(settings.hooks[event]) ? settings.hooks[event] : []
-  if (hasHookScript(existing, 'session-hook.sh')) {
-    skipped.push(event)
+  if (!fs.existsSync(SETTINGS_PATH)) {
+    existed = false
+    console.log(`\n  Creating new settings file at:\n  ${SETTINGS_PATH}\n`)
   } else {
-    settings.hooks[event] = [...existing, newEntry]
-    added.push(event)
+    try {
+      settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'))
+    } catch (e) {
+      console.error(`\n  ✗ Failed to parse ${SETTINGS_PATH}:`, e)
+      process.exit(1)
+    }
   }
-}
 
-// ─── Session ID injection hook (SessionStart only) ───
+  if (!settings.hooks) settings.hooks = {}
 
-const sessionIdEntry = {
-  hooks: [{ type: 'command', command: `bash ${SESSION_ID_HOOK_SCRIPT}` }],
-}
-
-const sessionStartHooks: unknown[] = Array.isArray(settings.hooks.SessionStart) ? settings.hooks.SessionStart : []
-const hasSessionIdHook = hasHookScript(sessionStartHooks, 'session-id-hook.sh')
-
-if (!hasSessionIdHook) {
-  settings.hooks.SessionStart = [...sessionStartHooks, sessionIdEntry]
-  added.push('SessionStart(session-id)')
-} else {
-  skipped.push('SessionStart(session-id)')
-}
-
-// ─── Report ───
-
-console.log('\n  Session Dashboard — Hook Setup\n  ' + '─'.repeat(38))
-
-if (added.length === 0) {
-  console.log('\n  ✓ All hooks already installed, nothing to do.\n')
-} else {
-  if (existed) {
-    fs.copyFileSync(SETTINGS_PATH, SETTINGS_PATH + '.bak')
-    console.log(`\n  Backup → ${SETTINGS_PATH}.bak`)
+  // New hook group entry to append (matches existing settings.json format)
+  const newEntry = {
+    hooks: [{ type: 'command', command: `bash ${HOOK_SCRIPT}` }],
   }
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n')
-  console.log(`  ✓ Added   : ${added.join(', ')}`)
+
+  // ─── Check & add ───
+
+  const added: string[] = []
+  const skipped: string[] = []
+
+  for (const event of REQUIRED_EVENTS) {
+    const existing: unknown[] = Array.isArray(settings.hooks[event]) ? settings.hooks[event] : []
+    if (hasHookScript(existing, 'session-hook.sh')) {
+      skipped.push(event)
+    } else {
+      settings.hooks[event] = [...existing, newEntry]
+      added.push(event)
+    }
+  }
+
+  // ─── Session ID injection hook (SessionStart only) ───
+
+  const sessionIdEntry = {
+    hooks: [{ type: 'command', command: `bash ${SESSION_ID_HOOK_SCRIPT}` }],
+  }
+
+  const sessionStartHooks: unknown[] = Array.isArray(settings.hooks.SessionStart) ? settings.hooks.SessionStart : []
+  const hasSessionIdHook = hasHookScript(sessionStartHooks, 'session-id-hook.sh')
+
+  if (!hasSessionIdHook) {
+    settings.hooks.SessionStart = [...sessionStartHooks, sessionIdEntry]
+    added.push('SessionStart(session-id)')
+  } else {
+    skipped.push('SessionStart(session-id)')
+  }
+
+  // ─── Report ───
+
+  console.log('\n  Session Dashboard — Hook Setup\n  ' + '─'.repeat(38))
+
+  if (added.length === 0) {
+    console.log('\n  ✓ All hooks already installed, nothing to do.\n')
+  } else {
+    if (existed) {
+      fs.copyFileSync(SETTINGS_PATH, SETTINGS_PATH + '.bak')
+      console.log(`\n  Backup → ${SETTINGS_PATH}.bak`)
+    }
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n')
+    console.log(`  ✓ Added   : ${added.join(', ')}`)
+  }
+
+  if (skipped.length > 0) {
+    console.log(`  ✓ Present : ${skipped.join(', ')}`)
+  }
+
+  console.log(`\n  Settings : ${SETTINGS_PATH}`)
+  console.log('  ⚡ Restart Claude Code for hooks to take effect.\n')
 }
 
-if (skipped.length > 0) {
-  console.log(`  ✓ Present : ${skipped.join(', ')}`)
-}
-
-console.log(`\n  Settings : ${SETTINGS_PATH}`)
-console.log('  ⚡ Restart Claude Code for hooks to take effect.\n')
+// Direct execution support
+const isDirectRun = process.argv[1] && (
+  process.argv[1].endsWith('setup-hooks.ts') ||
+  process.argv[1].endsWith('setup-hooks.js')
+)
+if (isDirectRun) setupHooks()

@@ -10,9 +10,9 @@
  */
 
 import Database from 'better-sqlite3'
-import { resolve } from 'path'
+import { getDbPath } from '../shared/config.js'
 
-const DB_PATH = resolve(import.meta.dirname, '..', 'data', 'dashboard.db')
+const DB_PATH = getDbPath()
 
 // ─── Types ───
 
@@ -361,7 +361,7 @@ function outputInsights(
 
 // ─── Main ───
 
-function main() {
+export function main() {
   const args = parseArgs()
 
   if (args.help) {
@@ -396,4 +396,9 @@ function main() {
   db.close()
 }
 
-main()
+// Direct execution support
+const isDirectRun = process.argv[1] && (
+  process.argv[1].endsWith('read-insights.ts') ||
+  process.argv[1].endsWith('read-insights.js')
+)
+if (isDirectRun) main()
