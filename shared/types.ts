@@ -96,7 +96,7 @@ export interface Insight {
   session_id: string
   content: string
   timestamp: string
-  source: 'transcript' | 'hook'
+  source: 'transcript' | 'hook' | 'user'
 }
 
 // ─── Session (aggregated view) ───

@@ -4,6 +4,7 @@ import type { Session } from '../../shared/types'
 import { formatRelativeTime } from '../utils/time'
 import { renderMarkdown } from '../utils/markdown'
 import { useSessionStore } from '../stores/session'
+import { usePreferencesStore } from '../stores/preferences'
 
 const props = defineProps<{
   session: Session
@@ -15,6 +16,7 @@ const emit = defineEmits<{
 }>()
 
 const store = useSessionStore()
+const prefs = usePreferencesStore()
 const isEditingAlias = ref(false)
 const editValue = ref('')
 
@@ -38,6 +40,11 @@ function onEditKeydown(e: KeyboardEvent) {
   else if (e.key === 'Escape') cancelEdit()
   e.stopPropagation()
 }
+
+const filteredInsights = computed(() => {
+  if (prefs.showUserPrompts) return props.session.insights
+  return props.session.insights.filter(ins => ins.source !== 'user')
+})
 
 const stateLabel = computed(() => {
   const labels: Record<string, string> = {
@@ -103,14 +110,15 @@ const relativeTime = computed(() => {
     </header>
 
     <div class="insights">
-      <template v-if="session.insights.length > 0">
+      <template v-if="filteredInsights.length > 0">
         <article
-          v-for="(insight, index) in session.insights"
+          v-for="(insight, index) in filteredInsights"
           :key="insight.id"
           class="insight"
+          :class="{ 'user-prompt-insight': insight.source === 'user' }"
         >
           <div class="insight-head">
-            <span class="insight-tag">{{ index === 0 ? 'Latest Insight' : 'Insight' }}</span>
+            <span class="insight-tag">{{ insight.source === 'user' ? 'User' : (index === 0 ? 'Latest Insight' : 'Insight') }}</span>
             <span class="insight-time">{{ formatRelativeTime(insight.timestamp) }}</span>
           </div>
           <div class="insight-body md-content" v-html="renderMarkdown(insight.content)" />
@@ -357,6 +365,11 @@ const relativeTime = computed(() => {
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.user-prompt-insight {
+  background: rgba(255, 180, 50, 0.06);
+  border-color: rgba(255, 180, 50, 0.15);
 }
 
 .insight-head {

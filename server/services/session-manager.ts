@@ -48,9 +48,10 @@ export class SessionManager {
   private stmtGetEventsCount: Database.Statement
 
   constructor(private db: Database.Database) {
-    this.transcriptWatcher = new TranscriptWatcher((sessionId, content) => {
-      this.addInsight(sessionId, content, 'transcript')
-    })
+    this.transcriptWatcher = new TranscriptWatcher(
+      (sessionId, content) => this.addInsight(sessionId, content, 'transcript'),
+      (sessionId, content) => this.addInsight(sessionId, content, 'user'),
+    )
 
     // Prepare statements
     this.stmtInsertSession = db.prepare(`
@@ -159,6 +160,9 @@ export class SessionManager {
       },
       onInsight: (sessionId, content) => {
         this.addInsight(sessionId, content, 'transcript')
+      },
+      onUserInput: (sessionId, content) => {
+        this.addInsight(sessionId, content, 'user')
       },
       onEvent: (sessionId, eventName, timestamp, rawPayload) => {
         this.handleCodexEvent(sessionId, eventName, timestamp, rawPayload)
@@ -383,7 +387,7 @@ export class SessionManager {
 
   // ─── Insight management ───
 
-  addInsight(sessionId: string, content: string, source: 'transcript' | 'hook' = 'transcript'): Insight | null {
+  addInsight(sessionId: string, content: string, source: 'transcript' | 'hook' | 'user' = 'transcript'): Insight | null {
     const session = this.sessions.get(sessionId)
     if (!session) return null
 
@@ -436,11 +440,22 @@ export class SessionManager {
     return row.count
   }
 
-  getSessionInsights(sessionId: string, limit: number, offset: number): Insight[] {
+  getSessionInsights(sessionId: string, limit: number, offset: number, excludeSource?: string): Insight[] {
+    if (excludeSource) {
+      return this.db.prepare(
+        `SELECT * FROM insights WHERE session_id = ? AND source != ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`
+      ).all(sessionId, excludeSource, limit, offset) as Insight[]
+    }
     return this.stmtGetInsightsPaged.all(sessionId, limit, offset) as Insight[]
   }
 
-  getSessionInsightsTotal(sessionId: string): number {
+  getSessionInsightsTotal(sessionId: string, excludeSource?: string): number {
+    if (excludeSource) {
+      const row = this.db.prepare(
+        'SELECT COUNT(*) as count FROM insights WHERE session_id = ? AND source != ?'
+      ).get(sessionId, excludeSource) as { count: number }
+      return row.count
+    }
     const session = this.sessions.get(sessionId)
     return session ? session.insights.length : 0
   }

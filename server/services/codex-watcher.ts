@@ -10,10 +10,13 @@ const CODEX_INDEX_PATH = join(homedir(), '.codex', 'session_index.jsonl')
 // How many days back to scan on startup
 const SCAN_DAYS = 7
 
+const MIN_USER_INPUT_LENGTH = 5
+
 export interface CodexSessionCallbacks {
   onSessionDiscovered: (sessionId: string, cwd: string, displayName: string, rolloutPath: string, timestamp: string) => void
   onStateChange: (sessionId: string, newState: 'active' | 'inactive', timestamp: string) => void
   onInsight: (sessionId: string, content: string) => void
+  onUserInput: (sessionId: string, content: string) => void
   onEvent: (sessionId: string, eventName: string, timestamp: string, rawPayload: string) => void
 }
 
@@ -224,6 +227,18 @@ export class CodexWatcher {
           this.callbacks.onStateChange(state.sessionId, 'active', timestamp)
         } else if (eventType === 'task_complete') {
           this.callbacks.onStateChange(state.sessionId, 'inactive', timestamp)
+        }
+
+        // Capture user input
+        if (eventType === 'user_message') {
+          const message: string = payload.message || ''
+          if (message.trim().length >= MIN_USER_INPUT_LENGTH) {
+            const hash = contentHash(message.trim())
+            if (!state.seenHashes.has(hash)) {
+              state.seenHashes.add(hash)
+              this.callbacks.onUserInput(state.sessionId, message.trim())
+            }
+          }
         }
 
         // Insight extraction from agent_message (non-commentary)

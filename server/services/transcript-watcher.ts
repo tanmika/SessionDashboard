@@ -3,6 +3,7 @@ import { watch } from 'fs'
 import { extractInsightBlocks, extractSignificantText, contentHash } from '../utils/insight-extractor.js'
 
 type InsightCallback = (sessionId: string, content: string) => void
+type UserInputCallback = (sessionId: string, content: string) => void
 
 interface WatchState {
   sessionId: string
@@ -12,12 +13,16 @@ interface WatchState {
   watcher: ReturnType<typeof watch> | null
 }
 
+const MIN_USER_INPUT_LENGTH = 5
+
 export class TranscriptWatcher {
   private watchers = new Map<string, WatchState>()
   private onInsight: InsightCallback
+  private onUserInput: UserInputCallback
 
-  constructor(onInsight: InsightCallback) {
+  constructor(onInsight: InsightCallback, onUserInput: UserInputCallback) {
     this.onInsight = onInsight
+    this.onUserInput = onUserInput
   }
 
   // Register a transcript file to watch for a session
@@ -108,11 +113,34 @@ export class TranscriptWatcher {
   }
 
   private processRecord(state: WatchState, obj: any) {
-    // Handle both formats:
-    // - type: "assistant" with message.content (project dir format)
-    // - Direct assistant messages
     const recordType = obj.type
 
+    // Capture user input
+    if (recordType === 'user') {
+      const message = obj.message
+      if (!message) return
+      // user message content can be a string or array of content blocks
+      let text = ''
+      if (typeof message.content === 'string') {
+        text = message.content
+      } else if (Array.isArray(message.content)) {
+        text = message.content
+          .filter((b: any) => b.type === 'text')
+          .map((b: any) => b.text)
+          .join('\n')
+      }
+      text = text.trim()
+      if (text.length >= MIN_USER_INPUT_LENGTH) {
+        const hash = contentHash(text)
+        if (!state.seenHashes.has(hash)) {
+          state.seenHashes.add(hash)
+          this.onUserInput(state.sessionId, text)
+        }
+      }
+      return
+    }
+
+    // Extract insights from assistant messages
     if (recordType !== 'assistant') return
 
     const message = obj.message
