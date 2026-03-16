@@ -95,6 +95,7 @@ const relativeTime = computed(() => {
         <div class="badges">
           <span class="source-badge" :class="session.source">{{ session.source === 'codex' ? 'Codex' : 'Claude' }}</span>
           <span class="status" :class="stateClass">{{ stateLabel }}</span>
+          <button class="unpin-btn" @click.stop="store.setPinned(session.session_id, false)" title="从看板移除">×</button>
         </div>
       </div>
       <div class="meta-grid">
@@ -247,6 +248,31 @@ const relativeTime = computed(() => {
   align-items: flex-end;
   gap: 6px;
   flex-shrink: 0;
+}
+
+.unpin-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.15s;
+}
+
+.column:hover .unpin-btn {
+  opacity: 0.6;
+}
+
+.unpin-btn:hover {
+  opacity: 1 !important;
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.1);
 }
 
 .source-badge {
