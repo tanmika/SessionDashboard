@@ -98,6 +98,121 @@ export const useSessionStore = defineStore('session', () => {
     return sessions.value.get(selectedSessionId.value) || null
   })
 
+  // ─── Sidebar tree ───
+
+  interface TreeNode {
+    label: string
+    fullPath: string
+    children: TreeNode[]
+    sessions: Session[]
+    totalCount: number
+  }
+
+  const sidebarSearch = ref('')
+
+  function setSidebarSearch(query: string) {
+    sidebarSearch.value = query
+  }
+
+  const sessionTree = computed<TreeNode>(() => {
+    const all = Array.from(sessions.value.values())
+
+    // Group by CWD
+    const byCwd = new Map<string, Session[]>()
+    for (const s of all) {
+      const cwd = s.cwd || '(unknown)'
+      if (!byCwd.has(cwd)) byCwd.set(cwd, [])
+      byCwd.get(cwd)!.push(s)
+    }
+
+    // Find longest common prefix among absolute paths
+    const absPaths = [...byCwd.keys()].filter(p => p.startsWith('/'))
+    let lcp = ''
+    if (absPaths.length > 0) {
+      const segs0 = absPaths[0].split('/')
+      let depth = 0
+      outer:
+      for (let i = 0; i < segs0.length; i++) {
+        for (const p of absPaths) {
+          if (p.split('/')[i] !== segs0[i]) break outer
+        }
+        depth = i + 1
+      }
+      lcp = segs0.slice(0, depth).join('/')
+      // Ensure LCP ends at directory boundary
+      if (lcp && !lcp.endsWith('/')) lcp += '/'
+    }
+
+    // Build raw trie
+    const root: TreeNode = { label: '', fullPath: lcp, children: [], sessions: [], totalCount: 0 }
+
+    for (const [cwdPath, cwdSessions] of byCwd) {
+      const relative = cwdPath.startsWith(lcp) ? cwdPath.slice(lcp.length) : cwdPath
+      const parts = relative.split('/').filter(Boolean)
+
+      let node = root
+      let currentPath = lcp
+      for (const part of parts) {
+        currentPath += part + '/'
+        let child = node.children.find(c => c.label === part)
+        if (!child) {
+          child = { label: part, fullPath: currentPath.replace(/\/$/, ''), children: [], sessions: [], totalCount: 0 }
+          node.children.push(child)
+        }
+        node = child
+      }
+      // Sort sessions: SORT_PRIORITY then last_activity desc
+      cwdSessions.sort((a, b) => {
+        const pa = SORT_PRIORITY[a.state], pb = SORT_PRIORITY[b.state]
+        if (pa !== pb) return pa - pb
+        return new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
+      })
+      node.sessions = cwdSessions
+    }
+
+    // Collapse single-child chains & compute totalCount
+    function collapse(node: TreeNode): TreeNode {
+      node.children = node.children.map(collapse)
+      // Collapse single-child intermediate
+      if (node.children.length === 1 && node.sessions.length === 0) {
+        const child = node.children[0]
+        return { ...child, label: node.label + '/' + child.label }
+      }
+      node.children.sort((a, b) => a.label.localeCompare(b.label))
+      node.totalCount = node.sessions.length + node.children.reduce((sum, c) => sum + c.totalCount, 0)
+      return node
+    }
+
+    root.children = root.children.map(collapse)
+    root.children.sort((a, b) => a.label.localeCompare(b.label))
+    root.totalCount = root.sessions.length + root.children.reduce((sum, c) => sum + c.totalCount, 0)
+
+    return root
+  })
+
+  const filteredSessionTree = computed<TreeNode | null>(() => {
+    const q = sidebarSearch.value.toLowerCase().trim()
+    if (!q) return sessionTree.value
+
+    function prune(node: TreeNode): TreeNode | null {
+      const matchingSessions = node.sessions.filter(s =>
+        s.display_name.toLowerCase().includes(q) ||
+        s.cwd.toLowerCase().includes(q) ||
+        s.session_id.toLowerCase().includes(q) ||
+        (s.alias && s.alias.toLowerCase().includes(q))
+      )
+      const matchingChildren = node.children
+        .map(prune)
+        .filter((c): c is TreeNode => c !== null)
+
+      if (matchingSessions.length === 0 && matchingChildren.length === 0) return null
+      const totalCount = matchingSessions.length + matchingChildren.reduce((sum, c) => sum + c.totalCount, 0)
+      return { ...node, sessions: matchingSessions, children: matchingChildren, totalCount }
+    }
+
+    return prune(sessionTree.value)
+  })
+
   // ─── WebSocket ───
 
   function connect() {
@@ -250,11 +365,15 @@ export const useSessionStore = defineStore('session', () => {
     allSortedSessions,
     stateCounts,
     selectedSession,
+    sessionTree,
+    filteredSessionTree,
+    sidebarSearch,
     connect,
     disconnect,
     selectSession,
     setFilter,
     setSearch,
+    setSidebarSearch,
     setAlias,
     setPinned,
   }

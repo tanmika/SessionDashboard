@@ -39,8 +39,8 @@ onUnmounted(() => {
       @select="store.selectSession(session.session_id)"
     />
     <div v-if="store.sortedSessions.length === 0" class="empty-board">
-      <p>还没有选择要关注的会话</p>
-      <p class="hint">点击右上角「管理」按钮，将感兴趣的 session 加入看板</p>
+      <p>看板暂无 session</p>
+      <p class="hint">在左侧栏点击 ★ 按钮将 session 加入看板</p>
     </div>
   </section>
 </template>
