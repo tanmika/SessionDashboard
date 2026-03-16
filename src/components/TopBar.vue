@@ -2,23 +2,12 @@
 import { ref } from 'vue'
 import { useSessionStore } from '../stores/session'
 import { usePreferencesStore } from '../stores/preferences'
-import type { SessionState } from '../../shared/types'
 import HooksStatus from './HooksStatus.vue'
 
 const store = useSessionStore()
 const prefs = usePreferencesStore()
 const showSettings = ref(false)
 
-const filters: { label: string; value: SessionState | 'all' | 'needs_attention'; attention?: boolean }[] = [
-  { label: 'All', value: 'all' },
-  { label: 'Needs Attention', value: 'needs_attention', attention: true },
-  { label: 'Waiting Permission', value: 'waiting_permission' },
-  { label: 'Waiting User', value: 'waiting_user' },
-  { label: 'Active', value: 'active' },
-  { label: 'Inactive', value: 'inactive' },
-  { label: 'Idle', value: 'idle' },
-  { label: 'Ended', value: 'ended' },
-]
 </script>
 
 <template>
@@ -45,6 +34,18 @@ const filters: { label: string; value: SessionState | 'all' | 'needs_attention';
                 <input type="checkbox" v-model="prefs.showUserPrompts" />
                 <span>Show user prompts in insights</span>
               </label>
+              <label class="setting-item" style="margin-top: 8px">
+                <span>归档天数</span>
+                <input
+                  type="number"
+                  class="setting-number"
+                  :value="prefs.archiveDays"
+                  @change="prefs.archiveDays = Math.max(1, parseInt(($event.target as HTMLInputElement).value) || 3)"
+                  min="1"
+                  max="90"
+                />
+                <span class="setting-hint">ended 超过此天数自动归档</span>
+              </label>
             </div>
           </div>
           <div class="connection-status" :class="{ connected: store.wsConnected }">
@@ -54,25 +55,7 @@ const filters: { label: string; value: SessionState | 'all' | 'needs_attention';
       </div>
     </div>
 
-    <aside class="toolbar">
-      <div class="toolbar-row">
-        <span
-          v-for="f in filters"
-          :key="f.value"
-          class="chip"
-          :class="{ active: store.filterState === f.value, attention: f.attention }"
-          @click="store.setFilter(f.value)"
-        >
-          {{ f.label }}
-        </span>
-      </div>
-      <input
-        class="search"
-        placeholder="搜索 session / cwd / session id"
-        :value="store.searchQuery"
-        @input="store.setSearch(($event.target as HTMLInputElement).value)"
-      />
-    </aside>
+    <!-- Filter & search moved to sidebar -->
   </section>
 </template>
 
@@ -84,16 +67,13 @@ const filters: { label: string; value: SessionState | 'all' | 'needs_attention';
   gap: 16px;
 }
 
-.hero, .toolbar {
+.hero {
   background: var(--panel);
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
   border-radius: var(--radius);
   backdrop-filter: blur(18px);
-}
-
-.hero {
-  flex: 1 1 520px;
+  flex: 1;
   padding: 20px 24px;
   display: flex;
   justify-content: space-between;
@@ -182,8 +162,27 @@ const filters: { label: string; value: SessionState | 'all' | 'needs_attention';
   user-select: none;
 }
 
-.setting-item input {
+.setting-item input[type="checkbox"] {
   accent-color: var(--accent);
+}
+
+.setting-number {
+  width: 48px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.06);
+  color: var(--text);
+  font-size: 13px;
+  text-align: center;
+  outline: none;
+}
+.setting-number:focus { border-color: rgba(124,156,255,0.3); }
+
+.setting-hint {
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.6;
 }
 
 .connection-status {
@@ -196,67 +195,6 @@ const filters: { label: string; value: SessionState | 'all' | 'needs_attention';
   color: var(--accent-2);
 }
 
-.toolbar {
-  flex: 0 1 360px;
-  padding: 18px;
-  display: grid;
-  gap: 14px;
-}
+/* Filter chips and search moved to sidebar */
 
-.toolbar-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.chip {
-  padding: 8px 12px;
-  font-size: 13px;
-  color: var(--muted);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.04);
-  cursor: pointer;
-  user-select: none;
-  transition: all 0.15s;
-}
-
-.chip:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.chip.active {
-  color: var(--text);
-  background: rgba(124, 156, 255, 0.14);
-  border-color: rgba(124, 156, 255, 0.38);
-}
-
-.chip.attention {
-  color: #ffd38a;
-  border-color: rgba(245, 158, 11, 0.28);
-}
-
-.chip.attention.active {
-  background: rgba(245, 158, 11, 0.14);
-  border-color: rgba(245, 158, 11, 0.42);
-}
-
-.search {
-  width: 100%;
-  padding: 12px 14px;
-  border-radius: 14px;
-  border: 1px solid var(--border);
-  background: rgba(5, 9, 20, 0.55);
-  color: var(--text);
-  outline: none;
-  font-size: 14px;
-}
-
-.search::placeholder {
-  color: #6f7b9a;
-}
-
-.search:focus {
-  border-color: rgba(124, 156, 255, 0.3);
-}
 </style>

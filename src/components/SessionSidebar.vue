@@ -12,6 +12,15 @@ const prefs = usePreferencesStore()
 
 const searchInput = ref('')
 
+const stateFilters: { label: string; value: string }[] = [
+  { label: '活跃', value: 'active' },
+  { label: '等待权限', value: 'waiting_permission' },
+  { label: '等待用户', value: 'waiting_user' },
+  { label: '非活跃', value: 'inactive' },
+  { label: '空闲', value: 'idle' },
+  { label: '已结束', value: 'ended' },
+]
+
 function onSearch() {
   store.setSidebarSearch(searchInput.value)
 }
@@ -139,6 +148,32 @@ const flatItems = computed<FlatItem[]>(() => {
         v-model="searchInput"
         @input="onSearch"
       />
+      <label v-if="searchInput" class="sb-search-filter">
+        <input type="checkbox" v-model="prefs.searchIncludeArchived" />
+        <span>含归档</span>
+      </label>
+    </div>
+
+    <!-- Filters -->
+    <div class="sb-filters">
+      <div class="sb-chips">
+        <span
+          v-for="f in stateFilters"
+          :key="f.value"
+          class="sb-chip"
+          :class="{ active: prefs.sidebarFilters.includes(f.value) }"
+          @click="prefs.toggleSidebarFilter(f.value as any)"
+        >{{ f.label }}</span>
+        <span
+          v-if="prefs.sidebarFilters.length > 0"
+          class="sb-chip sb-chip-clear"
+          @click="prefs.clearSidebarFilters()"
+        >清除</span>
+      </div>
+      <label class="sb-filter-toggle">
+        <input type="checkbox" v-model="prefs.hideShortSessions" />
+        <span>隐藏极短会话</span>
+      </label>
     </div>
 
     <!-- Tree -->
@@ -339,6 +374,58 @@ const flatItems = computed<FlatItem[]>(() => {
 }
 .sb-search::placeholder { color: rgba(155,167,198,0.4); }
 .sb-search:focus { border-color: rgba(124,156,255,0.3); }
+.sb-search-filter {
+  display: flex; align-items: center; gap: 5px;
+  margin-top: 5px; font-size: 11px; color: var(--muted);
+  cursor: pointer; user-select: none;
+}
+.sb-search-filter input { accent-color: var(--accent); }
+
+/* Filters */
+.sb-filters {
+  padding: 6px 10px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.sb-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.sb-chip {
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  background: rgba(255,255,255,0.03);
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+}
+.sb-chip:hover { background: rgba(255,255,255,0.06); }
+.sb-chip.active {
+  color: var(--text);
+  background: rgba(124,156,255,0.14);
+  border-color: rgba(124,156,255,0.38);
+}
+.sb-chip-clear {
+  color: var(--muted);
+  opacity: 0.6;
+  font-style: italic;
+}
+.sb-chip-clear:hover { opacity: 1; color: var(--danger); }
+.sb-filter-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.sb-filter-toggle input { accent-color: var(--accent); }
 
 /* Tree */
 .sb-tree {

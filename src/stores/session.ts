@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Session, WsMessage, SessionState } from '../../shared/types'
 import { SORT_PRIORITY } from '../../shared/types'
+import { usePreferencesStore } from './preferences'
 
 export const useSessionStore = defineStore('session', () => {
   const sessions = ref<Map<string, Session>>(new Map())
@@ -76,6 +77,7 @@ export const useSessionStore = defineStore('session', () => {
     return list
   })
 
+  // Stats: only pinned sessions (what's on the board)
   const stateCounts = computed(() => {
     const counts: Record<string, number> = {
       total: 0,
@@ -87,6 +89,7 @@ export const useSessionStore = defineStore('session', () => {
       ended: 0,
     }
     for (const s of sessions.value.values()) {
+      if (!s.pinned) continue
       counts.total++
       counts[s.state]++
     }
@@ -109,17 +112,47 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   const sidebarSearch = ref('')
+  // sidebarFilters and hideShortSessions live in preferences store (persisted)
 
   function setSidebarSearch(query: string) {
     sidebarSearch.value = query
   }
 
-  const sessionTree = computed<TreeNode>(() => {
-    const all = Array.from(sessions.value.values())
 
+  // Auto-archive: ended sessions older than N days (unless pinned) are hidden from sidebar tree
+  function isArchived(s: Session): boolean {
+    if (s.pinned) return false
+    if (s.state !== 'ended') return false
+    const { archiveDays } = usePreferencesStore()
+    const cutoff = Date.now() - archiveDays * 24 * 60 * 60 * 1000
+    return new Date(s.last_activity).getTime() < cutoff
+  }
+
+  // Short session: insights and user messages both <= 2
+  function isShortSession(s: Session): boolean {
+    const userCount = s.insights.filter(i => i.source === 'user').length
+    const insightCount = s.total_insights - userCount
+    return insightCount <= 2 && userCount <= 2
+  }
+
+  // Apply sidebar filters (state multi-select + short session) — runs BEFORE search
+  function applySidebarFilters(list: Session[]): Session[] {
+    const prefs = usePreferencesStore()
+    // State filter (multi-select; empty set = show all)
+    if (prefs.sidebarFilters.length > 0) {
+      list = list.filter(s => prefs.sidebarFilters.includes(s.state))
+    }
+    // Short session filter
+    if (prefs.hideShortSessions) {
+      list = list.filter(s => !isShortSession(s))
+    }
+    return list
+  }
+
+  function buildTree(sessionList: Session[]): TreeNode {
     // Group by CWD
     const byCwd = new Map<string, Session[]>()
-    for (const s of all) {
+    for (const s of sessionList) {
       const cwd = s.cwd || '(unknown)'
       if (!byCwd.has(cwd)) byCwd.set(cwd, [])
       byCwd.get(cwd)!.push(s)
@@ -188,11 +221,26 @@ export const useSessionStore = defineStore('session', () => {
     root.totalCount = root.sessions.length + root.children.reduce((sum, c) => sum + c.totalCount, 0)
 
     return root
+  }
+
+  // Pipeline: archive filter → sidebar filters (state + short) → build tree
+  const sessionTree = computed<TreeNode>(() => {
+    let visible = Array.from(sessions.value.values()).filter(s => !isArchived(s))
+    visible = applySidebarFilters(visible)
+    return buildTree(visible)
   })
 
+  // With search: optionally include archived, apply sidebar filters, then prune by query
   const filteredSessionTree = computed<TreeNode | null>(() => {
     const q = sidebarSearch.value.toLowerCase().trim()
     if (!q) return sessionTree.value
+
+    const { searchIncludeArchived } = usePreferencesStore()
+    let pool = searchIncludeArchived
+      ? Array.from(sessions.value.values())
+      : Array.from(sessions.value.values()).filter(s => !isArchived(s))
+    pool = applySidebarFilters(pool)
+    const fullTree = buildTree(pool)
 
     function prune(node: TreeNode): TreeNode | null {
       const matchingSessions = node.sessions.filter(s =>
@@ -210,7 +258,7 @@ export const useSessionStore = defineStore('session', () => {
       return { ...node, sessions: matchingSessions, children: matchingChildren, totalCount }
     }
 
-    return prune(sessionTree.value)
+    return prune(fullTree)
   })
 
   // ─── WebSocket ───
