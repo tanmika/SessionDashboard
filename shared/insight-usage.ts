@@ -10,7 +10,8 @@ export const INSIGHT_USAGE_MANUAL = `## Session Insight Recovery
 
 你的 session_id 在每次会话开始时通过 SessionStart hook 自动注入到上下文中（格式: "Your current session_id is: xxx"）。
 
-先从少量开始读取，根据尾部统计（如 "[30 / 1121 insights shown]"）决定是否加载更多。
+先从少量开始读取，根据尾部统计（如 "[30 / 1121 primary insights shown]"）决定是否加载更多。
+\`--limit\` / \`--offset\` 只计算主 insight；同一区间内的 user prompt 会自动附带，不占分页条数。
 
 \`\`\`bash
 # 读取 insights（先少量，按需增加）
