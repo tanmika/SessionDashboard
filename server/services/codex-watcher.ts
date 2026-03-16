@@ -2,15 +2,13 @@ import { existsSync, readFileSync, openSync, readSync, closeSync, statSync, read
 import { watch, type FSWatcher } from 'fs'
 import { join, basename } from 'path'
 import { homedir } from 'os'
-import { extractInsightBlocks, contentHash } from '../utils/insight-extractor.js'
+import { extractInsightBlocks, contentHash, sanitizeUserInput } from '../utils/insight-extractor.js'
 
 export const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions')
 const CODEX_INDEX_PATH = join(homedir(), '.codex', 'session_index.jsonl')
 
 // How many days back to scan on startup
 const SCAN_DAYS = 7
-
-const MIN_USER_INPUT_LENGTH = 5
 
 export interface CodexSessionCallbacks {
   onSessionDiscovered: (sessionId: string, cwd: string, displayName: string, rolloutPath: string, timestamp: string) => void
@@ -231,12 +229,13 @@ export class CodexWatcher {
 
         // Capture user input
         if (eventType === 'user_message') {
-          const message: string = payload.message || ''
-          if (message.trim().length >= MIN_USER_INPUT_LENGTH) {
-            const hash = contentHash(message.trim())
+          const raw: string = payload.message || ''
+          const sanitized = sanitizeUserInput(raw)
+          if (sanitized) {
+            const hash = contentHash(sanitized)
             if (!state.seenHashes.has(hash)) {
               state.seenHashes.add(hash)
-              this.callbacks.onUserInput(state.sessionId, message.trim())
+              this.callbacks.onUserInput(state.sessionId, sanitized)
             }
           }
         }
@@ -266,25 +265,12 @@ export class CodexWatcher {
   }
 
   private extractAndEmitInsights(state: RolloutState, text: string) {
-    // Try insight blocks first
     const blocks = extractInsightBlocks(text)
-    if (blocks.length > 0) {
-      for (const block of blocks) {
-        const hash = contentHash(block)
-        if (state.seenHashes.has(hash)) continue
-        state.seenHashes.add(hash)
-        this.callbacks.onInsight(state.sessionId, block)
-      }
-      return
-    }
-
-    // Fallback: significant text paragraphs
-    const paragraphs = extractSignificantText(text)
-    for (const para of paragraphs) {
-      const hash = contentHash(para)
+    for (const block of blocks) {
+      const hash = contentHash(block)
       if (state.seenHashes.has(hash)) continue
       state.seenHashes.add(hash)
-      this.callbacks.onInsight(state.sessionId, para)
+      this.callbacks.onInsight(state.sessionId, block)
     }
   }
 }

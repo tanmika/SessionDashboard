@@ -1,6 +1,6 @@
 import { existsSync, openSync, readSync, closeSync, statSync } from 'fs'
 import { watch } from 'fs'
-import { extractInsightBlocks, contentHash } from '../utils/insight-extractor.js'
+import { extractInsightBlocks, contentHash, sanitizeUserInput } from '../utils/insight-extractor.js'
 
 type InsightCallback = (sessionId: string, content: string) => void
 type UserInputCallback = (sessionId: string, content: string) => void
@@ -13,35 +13,7 @@ interface WatchState {
   watcher: ReturnType<typeof watch> | null
 }
 
-const MIN_USER_INPUT_LENGTH = 5
-const MAX_USER_INPUT_LENGTH = 2000
-
-/** Patterns that indicate system-generated content, not real user input */
-const USER_INPUT_NOISE_PATTERNS = [
-  /^\[Request interrupted/,                      // Claude Code interrupt marker
-  /^<command-name>/,                             // Slash command XML
-  /^<local-command-/,                            // Local command output/caveat
-  /╭───.*Claude Code/,                           // TUI welcome screen
-  /^Implement the following plan:/,              // Hook-injected plan text
-]
-
-/** Patterns for sensitive credentials that should be redacted */
-const CREDENTIAL_PATTERNS = [
-  /(github_pat_|ghp_|gho_|ghs_)[A-Za-z0-9_]+/g,
-  /sk-[a-f0-9]{20,}/g,
-]
-
-function isUserInputNoise(text: string): boolean {
-  return USER_INPUT_NOISE_PATTERNS.some(p => p.test(text))
-}
-
-function redactCredentials(text: string): string {
-  let result = text
-  for (const pattern of CREDENTIAL_PATTERNS) {
-    result = result.replace(pattern, '[REDACTED]')
-  }
-  return result
-}
+// User input filtering is in ../utils/insight-extractor.ts (sanitizeUserInput)
 
 export class TranscriptWatcher {
   private watchers = new Map<string, WatchState>()
@@ -157,17 +129,12 @@ export class TranscriptWatcher {
           .map((b: any) => b.text)
           .join('\n')
       }
-      text = text.trim()
-      if (text.length < MIN_USER_INPUT_LENGTH) return
-      if (isUserInputNoise(text)) return
-      text = redactCredentials(text)
-      if (text.length > MAX_USER_INPUT_LENGTH) {
-        text = text.substring(0, MAX_USER_INPUT_LENGTH) + ' [truncated]'
-      }
-      const hash = contentHash(text)
+      const sanitized = sanitizeUserInput(text)
+      if (!sanitized) return
+      const hash = contentHash(sanitized)
       if (!state.seenHashes.has(hash)) {
         state.seenHashes.add(hash)
-        this.onUserInput(state.sessionId, text)
+        this.onUserInput(state.sessionId, sanitized)
       }
       return
     }
@@ -190,26 +157,12 @@ export class TranscriptWatcher {
   }
 
   private extractAndEmit(state: WatchState, text: string) {
-    // Try insight blocks first
     const insightBlocks = extractInsightBlocks(text)
-
-    if (insightBlocks.length > 0) {
-      for (const block of insightBlocks) {
-        const hash = contentHash(block)
-        if (state.seenHashes.has(hash)) continue
-        state.seenHashes.add(hash)
-        this.onInsight(state.sessionId, block)
-      }
-      return
-    }
-
-    // Fallback: significant text paragraphs
-    const paragraphs = extractSignificantText(text)
-    for (const para of paragraphs) {
-      const hash = contentHash(para)
+    for (const block of insightBlocks) {
+      const hash = contentHash(block)
       if (state.seenHashes.has(hash)) continue
       state.seenHashes.add(hash)
-      this.onInsight(state.sessionId, para)
+      this.onInsight(state.sessionId, block)
     }
   }
 }
