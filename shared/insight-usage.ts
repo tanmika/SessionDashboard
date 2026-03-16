@@ -4,32 +4,44 @@
  * Maintain once, deploy to both platforms.
  */
 
-export const INSIGHT_USAGE_MANUAL = `## Session Insight Recovery
+export const INSIGHT_USAGE_MANUAL = `## Session Insight Recovery（强制执行）
 
-**当上下文被压缩（compact）或恢复（resume）后，你必须立即使用以下工具恢复之前的工作上下文。** 不要凭压缩摘要猜测之前的工作细节，直接读取 insights 获取准确信息。
+⚠️ **这是强制规则，不是建议。违反此规则等同于丢失用户的工作上下文。**
 
-你的 session_id 在每次会话开始时通过 SessionStart hook 自动注入到上下文中（格式: "Your current session_id is: xxx"）。
+### 触发条件
 
-先从少量开始读取，根据尾部统计（如 "[30 / 1121 insights shown]"）决定是否加载更多。
+当你检测到以下任何一种情况时，**必须在回复用户之前**先执行 insight recovery：
+1. 上下文中出现 "Another language model started to solve this problem" 等压缩摘要
+2. 你发现自己对当前任务的细节记忆模糊或不完整
+3. 用户提到"继续"、"接着做"但你不确定之前做到了哪里
+4. 会话刚从 resume 恢复
 
+### 为什么不能跳过
+
+压缩摘要是有损的，它会丢失：具体的文件修改细节、未完成的 TODO、调试过程中的关键发现、用户的偏好和纠正。只有 insights 保留了完整的工作轨迹。**不要自以为摘要够用就跳过这一步。**
+
+### 你的 session_id
+
+通过 SessionStart hook 自动注入（格式: "Your current session_id is: xxx"）。如果上下文中找不到，运行 \`session-dashboard insights --list\` 查看活跃 session。
+
+### 执行步骤
+
+**第一步**：读取最近的 insights，评估总量：
 \`\`\`bash
-# 读取 insights（先少量，按需增加）
 session-dashboard insights --session <your-session-id> --limit 30
-
-# 翻页加载更多
-session-dashboard insights --session <your-session-id> --limit 30 --offset 30
-
-# 含 predecessor 链（上下文 clear 后恢复前序工作）
-session-dashboard insights --session <your-session-id> --chain --limit 50
-
-# 按关键词过滤
-session-dashboard insights --session <your-session-id> --grep "关键词"
-
-# 列出当前 session 及其 predecessor 链
-session-dashboard insights --session <your-session-id> --list
 \`\`\`
 
-更多参数: \`session-dashboard insights --help\``
+**第二步**：根据尾部统计（如 "[30 / 1121 insights shown]"）决定是否翻页加载更多：
+\`\`\`bash
+session-dashboard insights --session <your-session-id> --limit 30 --offset 30
+\`\`\`
+
+**第三步**（可选）：如果是从 /new 创建的新 session，用 --chain 追溯前序：
+\`\`\`bash
+session-dashboard insights --session <your-session-id> --chain --limit 50
+\`\`\`
+
+其他：\`--grep "关键词"\` 过滤、\`--list\` 查看 session 链。更多参数: \`session-dashboard insights --help\``
 
 /** Claude Code specific additions (subagent pattern, output-style) */
 export const CLAUDE_SPECIFIC_NOTES = `
