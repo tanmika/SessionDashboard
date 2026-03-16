@@ -123,6 +123,94 @@ export function setupHooks(options?: { packageRoot?: string }) {
   console.log('  ⚡ Restart Claude Code for hooks to take effect.\n')
 }
 
+// ─── Codex hooks setup ───
+
+export function setupCodexHooks(options?: { packageRoot?: string }) {
+  const packageRoot = options?.packageRoot || path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)), '..'
+  )
+  const CODEX_DIR = path.join(os.homedir(), '.codex')
+  const HOOKS_JSON_PATH = path.join(CODEX_DIR, 'hooks.json')
+  const CONFIG_TOML_PATH = path.join(CODEX_DIR, 'config.toml')
+  const SESSION_ID_HOOK_SCRIPT = path.resolve(packageRoot, 'hooks', 'session-id-hook.sh')
+
+  console.log('\n  Session Dashboard — Codex Hook Setup\n  ' + '─'.repeat(38))
+
+  if (!fs.existsSync(CODEX_DIR)) {
+    console.log('  ✗ ~/.codex/ not found. Skipping Codex hook setup.')
+    return
+  }
+
+  // 1. Ensure [features] codex_hooks = true in config.toml
+  let configUpdated = false
+  if (fs.existsSync(CONFIG_TOML_PATH)) {
+    let toml = fs.readFileSync(CONFIG_TOML_PATH, 'utf-8')
+    if (!toml.includes('codex_hooks')) {
+      // Find [features] section or create it
+      if (toml.includes('[features]')) {
+        toml = toml.replace('[features]', '[features]\ncodex_hooks = true')
+      } else {
+        // Insert before the first [table] section (TOML requires root keys before tables)
+        const firstTable = toml.search(/^\[(?!features)/m)
+        if (firstTable > 0) {
+          toml = toml.slice(0, firstTable) + '[features]\ncodex_hooks = true\n\n' + toml.slice(firstTable)
+        } else {
+          toml += '\n[features]\ncodex_hooks = true\n'
+        }
+      }
+      fs.copyFileSync(CONFIG_TOML_PATH, CONFIG_TOML_PATH + '.bak')
+      fs.writeFileSync(CONFIG_TOML_PATH, toml)
+      console.log('  ✓ Enabled codex_hooks feature flag in config.toml')
+      configUpdated = true
+    } else {
+      console.log('  ✓ codex_hooks feature flag already enabled')
+    }
+  } else {
+    console.log('  ✗ config.toml not found. Skipping feature flag.')
+  }
+
+  // 2. Write/update hooks.json with session-id hook
+  let hooksConfig: any = { hooks: {} }
+  let hooksExisted = false
+
+  if (fs.existsSync(HOOKS_JSON_PATH)) {
+    hooksExisted = true
+    try {
+      hooksConfig = JSON.parse(fs.readFileSync(HOOKS_JSON_PATH, 'utf-8'))
+      if (!hooksConfig.hooks) hooksConfig.hooks = {}
+    } catch {
+      console.log('  ⚠ Failed to parse hooks.json, recreating...')
+      hooksConfig = { hooks: {} }
+    }
+  }
+
+  // Check if session-id hook already registered
+  const sessionStartHooks: unknown[] = Array.isArray(hooksConfig.hooks.SessionStart)
+    ? hooksConfig.hooks.SessionStart
+    : []
+
+  if (hasHookScript(sessionStartHooks, 'session-id-hook.sh')) {
+    console.log('  ✓ Session ID hook already installed in hooks.json')
+  } else {
+    const entry = {
+      hooks: [{ type: 'command', command: `bash ${SESSION_ID_HOOK_SCRIPT}`, timeout: 5 }],
+    }
+    hooksConfig.hooks.SessionStart = [...sessionStartHooks, entry]
+
+    if (hooksExisted) {
+      fs.copyFileSync(HOOKS_JSON_PATH, HOOKS_JSON_PATH + '.bak')
+    }
+    fs.writeFileSync(HOOKS_JSON_PATH, JSON.stringify(hooksConfig, null, 2) + '\n')
+    console.log('  ✓ Added session-id hook to hooks.json')
+  }
+
+  if (configUpdated) {
+    console.log('  ⚡ Restart Codex CLI for hooks to take effect.\n')
+  } else {
+    console.log()
+  }
+}
+
 // Direct execution support
 const isDirectRun = process.argv[1] && (
   process.argv[1].endsWith('setup-hooks.ts') ||

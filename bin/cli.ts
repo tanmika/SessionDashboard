@@ -9,6 +9,7 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync, openSync, mkdirSyn
 import { homedir } from 'os'
 import { spawn, execSync } from 'child_process'
 import { getHomeDir, getPidPath, getLogPath, getPort } from '../shared/config.js'
+import { INSIGHT_USAGE_MANUAL, CLAUDE_SPECIFIC_NOTES } from '../shared/insight-usage.js'
 
 // ─── Version ───
 
@@ -77,11 +78,14 @@ async function cmdInit() {
   console.log(`\n  ✓ Data directory: ${home}`)
 
   // 2. Setup hooks (Claude Code)
-  const { setupHooks } = await import('../scripts/setup-hooks.js')
+  const { setupHooks, setupCodexHooks } = await import('../scripts/setup-hooks.js')
   const packageRoot = resolve(import.meta.dirname, '..')
   setupHooks({ packageRoot })
 
-  // 3. Setup codex insight instructions (non-fatal if ~/.codex doesn't exist)
+  // 3. Setup hooks (Codex CLI)
+  setupCodexHooks({ packageRoot })
+
+  // 4. Setup codex insight instructions (non-fatal if ~/.codex doesn't exist)
   const { setupCodex } = await import('../scripts/setup-codex.js')
   setupCodex()
 
@@ -98,27 +102,8 @@ const CLAUDE_MD_MARKER_END = '<!-- /SESSION-INSIGHT-RECOVERY -->'
 
 function getClaudeMdBlock(): string {
   return `${CLAUDE_MD_MARKER_START}
-## Session Insight Recovery
-
-上下文压缩后，可通过 Session Dashboard CLI 恢复之前的 insights。你的 session_id 在 session 开始时已通过 hook 注入到上下文中（格式: "Your current session_id is: xxx"）。
-
-**使用方式**：启动 Explore subagent 运行 CLI，让 subagent 阅读整理后返回精炼摘要，避免原始 insights 消耗主上下文 token。
-
-\`\`\`bash
-# 读取当前 session 最近 30 条 insights
-session-dashboard insights --session <your-session-id> --limit 30
-
-# 含 predecessor 链的 insights（上下文 clear 后恢复前序工作）
-session-dashboard insights --session <your-session-id> --chain --limit 50
-
-# 按关键词过滤
-session-dashboard insights --session <your-session-id> --grep "关键词"
-
-# 翻页
-session-dashboard insights --session <your-session-id> --limit 30 --offset 30
-\`\`\`
-
-完整参数: \`session-dashboard insights --help\`。工具直接读 SQLite DB，不依赖 server。
+${INSIGHT_USAGE_MANUAL}
+${CLAUDE_SPECIFIC_NOTES}
 ${CLAUDE_MD_MARKER_END}`
 }
 
