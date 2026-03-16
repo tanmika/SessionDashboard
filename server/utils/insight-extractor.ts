@@ -1,6 +1,7 @@
 import { createHash } from 'crypto'
 
-// Extracts the content between ★ Insight markers
+// Extracts the content between ★ Insight markers.
+// Only explicit insight blocks are persisted as transcript insights.
 const INSIGHT_START_RE = /`★ Insight\s*[─\-]+`/
 const INSIGHT_END_RE = /`[─\-]{10,}`/
 
@@ -25,16 +26,6 @@ export function extractInsightBlocks(text: string): string[] {
   }
 
   return results
-}
-
-// Fallback: extract significant text paragraphs (>150 chars)
-export function extractSignificantText(text: string): string[] {
-  const paragraphs = text
-    .split(/\n\n+/)
-    .map((p) => p.trim())
-    .filter((p) => p.length > 150 && !p.startsWith('#') && !p.startsWith('```'))
-
-  return paragraphs.slice(0, 3) // max 3 paragraphs per message
 }
 
 export function contentHash(content: string): string {

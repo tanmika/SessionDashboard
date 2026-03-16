@@ -2,7 +2,7 @@ import { existsSync, readFileSync, openSync, readSync, closeSync, statSync, read
 import { watch, type FSWatcher } from 'fs'
 import { join, basename } from 'path'
 import { homedir } from 'os'
-import { extractInsightBlocks, extractSignificantText, contentHash } from '../utils/insight-extractor.js'
+import { extractInsightBlocks, contentHash } from '../utils/insight-extractor.js'
 
 export const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions')
 const CODEX_INDEX_PATH = join(homedir(), '.codex', 'session_index.jsonl')
@@ -266,25 +266,12 @@ export class CodexWatcher {
   }
 
   private extractAndEmitInsights(state: RolloutState, text: string) {
-    // Try insight blocks first
     const blocks = extractInsightBlocks(text)
-    if (blocks.length > 0) {
-      for (const block of blocks) {
-        const hash = contentHash(block)
-        if (state.seenHashes.has(hash)) continue
-        state.seenHashes.add(hash)
-        this.callbacks.onInsight(state.sessionId, block)
-      }
-      return
-    }
-
-    // Fallback: significant text paragraphs
-    const paragraphs = extractSignificantText(text)
-    for (const para of paragraphs) {
-      const hash = contentHash(para)
+    for (const block of blocks) {
+      const hash = contentHash(block)
       if (state.seenHashes.has(hash)) continue
       state.seenHashes.add(hash)
-      this.callbacks.onInsight(state.sessionId, para)
+      this.callbacks.onInsight(state.sessionId, block)
     }
   }
 }

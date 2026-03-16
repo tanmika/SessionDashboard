@@ -1,6 +1,6 @@
 import { existsSync, openSync, readSync, closeSync, statSync } from 'fs'
 import { watch } from 'fs'
-import { extractInsightBlocks, extractSignificantText, contentHash } from '../utils/insight-extractor.js'
+import { extractInsightBlocks, contentHash } from '../utils/insight-extractor.js'
 
 type InsightCallback = (sessionId: string, content: string) => void
 type UserInputCallback = (sessionId: string, content: string) => void
@@ -190,26 +190,12 @@ export class TranscriptWatcher {
   }
 
   private extractAndEmit(state: WatchState, text: string) {
-    // Try insight blocks first
     const insightBlocks = extractInsightBlocks(text)
-
-    if (insightBlocks.length > 0) {
-      for (const block of insightBlocks) {
-        const hash = contentHash(block)
-        if (state.seenHashes.has(hash)) continue
-        state.seenHashes.add(hash)
-        this.onInsight(state.sessionId, block)
-      }
-      return
-    }
-
-    // Fallback: significant text paragraphs
-    const paragraphs = extractSignificantText(text)
-    for (const para of paragraphs) {
-      const hash = contentHash(para)
+    for (const block of insightBlocks) {
+      const hash = contentHash(block)
       if (state.seenHashes.has(hash)) continue
       state.seenHashes.add(hash)
-      this.onInsight(state.sessionId, para)
+      this.onInsight(state.sessionId, block)
     }
   }
 }
