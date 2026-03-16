@@ -65,6 +65,7 @@ async function loadMoreEvents() {
 const extraInsights = ref<Insight[]>([])
 const loadingMoreInsights = ref(false)
 const allInsightsLoaded = ref(false)
+const totalInsights = ref(0)
 
 const allInsights = computed(() => {
   if (!store.selectedSession) return []
@@ -79,13 +80,13 @@ const displayedInsights = computed(() => {
 const hasMoreInsights = computed(() =>
   !allInsightsLoaded.value &&
   store.selectedSession != null &&
-  store.selectedSession.total_insights > displayedInsights.value.length
+  totalInsights.value > displayedInsights.value.length
 )
 
 async function loadMoreInsights() {
   const id = store.selectedSessionId
   if (!id || loadingMoreInsights.value) return
-  const offset = allInsights.value.length
+  const offset = prefs.showUserPrompts ? allInsights.value.length : displayedInsights.value.length
   loadingMoreInsights.value = true
   try {
     let url = `/api/sessions/${id}/insights?limit=${PAGE_SIZE}&offset=${offset}`
@@ -93,8 +94,13 @@ async function loadMoreInsights() {
     const res = await fetch(url)
     const json = await res.json()
     const newInsights = json.data || []
+    totalInsights.value = json.total ?? totalInsights.value
     extraInsights.value.push(...newInsights)
-    if (newInsights.length < PAGE_SIZE) allInsightsLoaded.value = true
+    if (displayedInsights.value.length >= totalInsights.value) {
+      allInsightsLoaded.value = true
+    } else if (newInsights.length < PAGE_SIZE) {
+      allInsightsLoaded.value = true
+    }
   } catch { /* ignore */ }
   loadingMoreInsights.value = false
 }
@@ -111,6 +117,7 @@ watch(
     extraInsights.value = []
     allInsightsLoaded.value = false
     loadingMoreInsights.value = false
+    totalInsights.value = store.selectedSession?.total_insights ?? 0
 
     // Reset events pagination & load first page
     events.value = []
@@ -134,6 +141,25 @@ watch(
       loadError.value = true
     }
     loading.value = false
+  },
+  { immediate: true }
+)
+
+watch(
+  () => [store.selectedSessionId, prefs.showUserPrompts] as const,
+  async ([id]) => {
+    totalInsights.value = prefs.showUserPrompts
+      ? (store.selectedSession?.total_insights ?? 0)
+      : displayedInsights.value.length
+
+    if (!id || prefs.showUserPrompts) return
+
+    try {
+      const res = await fetch(`/api/sessions/${id}/insights?limit=0&offset=0&exclude_source=user`)
+      const json = await res.json()
+      totalInsights.value = json.total ?? totalInsights.value
+      allInsightsLoaded.value = displayedInsights.value.length >= totalInsights.value
+    } catch { /* ignore */ }
   },
   { immediate: true }
 )

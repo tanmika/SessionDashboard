@@ -11,6 +11,8 @@ import { spawn, execSync } from 'child_process'
 import { getHomeDir, getPidPath, getLogPath, getPort } from '../shared/config.js'
 import { INSIGHT_USAGE_MANUAL, CLAUDE_SPECIFIC_NOTES } from '../shared/insight-usage.js'
 
+const STARTUP_GRACE_MS = 800
+
 // ─── Version ───
 
 function getVersion(): string {
@@ -158,7 +160,7 @@ function setupClaudeMd() {
   console.log(`  File: ${claudeMdPath}`)
 }
 
-function cmdStart() {
+async function cmdStart() {
   const pid = readPid()
   if (pid && isProcessAlive(pid)) {
     console.log(`[session-dashboard] already running (PID: ${pid})`)
@@ -184,6 +186,16 @@ function cmdStart() {
     stdio: ['ignore', logFd, logFd],
     env: { ...process.env },
   })
+
+  const startupResult = await Promise.race([
+    new Promise<'exited'>((resolve) => child.once('exit', () => resolve('exited'))),
+    new Promise<'running'>((resolve) => setTimeout(() => resolve('running'), STARTUP_GRACE_MS)),
+  ])
+
+  if (startupResult === 'exited') {
+    console.error(`[session-dashboard] failed to start; check log: ${logPath}`)
+    process.exit(1)
+  }
 
   child.unref()
   writeFileSync(getPidPath(), String(child.pid))
@@ -278,7 +290,7 @@ switch (command) {
     await cmdInit()
     break
   case 'start':
-    cmdStart()
+    await cmdStart()
     break
   case 'stop':
     cmdStop()

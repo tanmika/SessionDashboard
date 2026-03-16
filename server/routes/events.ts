@@ -5,7 +5,7 @@ import type { SessionManager } from '../services/session-manager.js'
 export function createEventRoutes(sessionManager: SessionManager): Router {
   const router = Router()
 
-  // Receive hook events from Claude Code
+  // Receive hook events from Claude Code / Codex CLI
   router.post('/events', (req, res) => {
     const payload = req.body as HookEventPayload
 
@@ -19,7 +19,9 @@ export function createEventRoutes(sessionManager: SessionManager): Router {
       payload.timestamp = new Date().toISOString()
     }
 
-    const session = sessionManager.handleEvent(payload)
+    const session = payload.dashboard_source === 'codex'
+      ? sessionManager.handleCodexHookEvent(payload)
+      : sessionManager.handleEvent(payload)
     res.json({ ok: true, session_id: session.session_id, state: session.state })
   })
 

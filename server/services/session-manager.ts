@@ -197,9 +197,6 @@ export class SessionManager {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
-    // Don't resurrect ended sessions from Codex events
-    if (session.state === 'ended') return
-
     session.state = newState
     session.last_activity = timestamp
     this.persistAndBroadcast(session)
@@ -218,6 +215,48 @@ export class SessionManager {
       timestamp,
       rawPayload
     )
+
+    // User/agent messages are concrete Codex activity signals and should refresh session liveness.
+    if (eventName === 'user_message' || eventName === 'agent_message') {
+      session.state = 'active'
+      session.last_activity = timestamp
+      this.persistAndBroadcast(session)
+    }
+  }
+
+  handleCodexHookEvent(payload: HookEventPayload): Session {
+    const now = payload.timestamp || new Date().toISOString()
+    const sid = payload.session_id
+
+    let session = this.sessions.get(sid)
+    if (!session) {
+      session = this.createSession(sid, payload.cwd || '', payload.transcript_path, now, 'codex')
+    }
+
+    if (payload.cwd) session.cwd = payload.cwd
+    if (payload.transcript_path) session.transcript_path = payload.transcript_path
+    session.display_name = this.makeDisplayName(session.cwd, sid, session.alias)
+
+    this.stmtInsertEvent.run(
+      sid,
+      payload.hook_event_name,
+      payload.notification_type || null,
+      payload.tool_name || null,
+      payload.subagent_id || null,
+      now,
+      JSON.stringify(payload)
+    )
+
+    if (payload.hook_event_name === 'SessionStart') {
+      session.state = 'active'
+      session.last_activity = now
+    } else if (payload.hook_event_name === 'Stop') {
+      session.state = 'inactive'
+      session.last_activity = now
+    }
+
+    this.persistAndBroadcast(session)
+    return session
   }
 
   // ─── Handle incoming hook event (Claude Code) ───
