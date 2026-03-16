@@ -38,15 +38,7 @@ type SessionRow = {
   predecessor_id: string
 }
 
-type InsightSource = 'transcript' | 'hook' | 'user'
-
-type InsightRow = {
-  id: number
-  content: string
-  timestamp: string
-  source: InsightSource
-  source_session: string
-}
+type InsightRow = { content: string; timestamp: string; source?: string }
 
 // ─── Help ───
 
@@ -59,9 +51,9 @@ Required:
   --session <id>     Session ID (supports prefix match, e.g. "a1b2")
 
 Options:
-  --limit <n>        Max primary insights to return (default: 50)
-  --offset <n>       Skip first n primary insights (newest first)
-  --grep <pattern>   Filter primary insights by regex pattern (case-insensitive)
+  --limit <n>        Max insights to return (default: 50)
+  --offset <n>       Skip first n results, for pagination (default: 0)
+  --grep <pattern>   Filter insights by regex pattern (case-insensitive)
   --chain            Include predecessor sessions' insights (merged, newest first)
   --list             List matching sessions instead of showing insights
   --json             Output as JSON
@@ -71,7 +63,7 @@ Examples:
   # List sessions matching a prefix
   npx tsx scripts/read-insights.ts --session a1b2 --list
 
-  # Read latest 30 primary insights (+ attached user prompts)
+  # Read latest 30 insights
   npx tsx scripts/read-insights.ts --session a1b2c3d4 --limit 30
 
   # Search for keyword
@@ -142,20 +134,6 @@ function formatRelative(isoStr: string): string {
   return `${days}d ago`
 }
 
-function formatAbsolute(isoStr: string): string {
-  const date = new Date(isoStr)
-  const yyyy = String(date.getFullYear())
-  const mm = String(date.getMonth() + 1).padStart(2, '0')
-  const dd = String(date.getDate()).padStart(2, '0')
-  const hh = String(date.getHours()).padStart(2, '0')
-  const min = String(date.getMinutes()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd} ${hh}:${min}`
-}
-
-function formatBoundaryTime(isoStr: string): string {
-  return `${formatAbsolute(isoStr)} (${formatRelative(isoStr)})`
-}
-
 function openDb(): Database.Database {
   try {
     return new Database(DB_PATH, { readonly: true })
@@ -197,20 +175,12 @@ function getChain(db: Database.Database, startSessionId: string): string[] {
 // ─── Commands ───
 
 function cmdList(db: Database.Database, sessions: SessionRow[], args: Args) {
-  const stmtPrimaryCount = db.prepare(
-    `SELECT COUNT(*) as count FROM insights
-     WHERE session_id = ? AND source != 'user'`
-  )
-  const stmtUserCount = db.prepare(
-    `SELECT COUNT(*) as count FROM insights
-     WHERE session_id = ? AND source = 'user'`
-  )
+  const stmtCount = db.prepare('SELECT COUNT(*) as count FROM insights WHERE session_id = ?')
 
   if (args.json) {
     const data = sessions.map(s => ({
       ...s,
-      insights_count: (stmtPrimaryCount.get(s.session_id) as { count: number }).count,
-      user_prompts_count: (stmtUserCount.get(s.session_id) as { count: number }).count,
+      insights_count: (stmtCount.get(s.session_id) as { count: number }).count,
     }))
     console.log(JSON.stringify(data, null, 2))
     return
@@ -221,22 +191,19 @@ function cmdList(db: Database.Database, sessions: SessionRow[], args: Args) {
     'STATE'.padEnd(12) +
     'SOURCE'.padEnd(8) +
     'INSIGHTS'.padEnd(10) +
-    'USER'.padEnd(8) +
     'LAST_ACTIVE'.padEnd(13) +
     'ALIAS / CWD'
   )
   console.log('─'.repeat(80))
 
   for (const s of sessions) {
-    const insightCount = (stmtPrimaryCount.get(s.session_id) as { count: number }).count
-    const userCount = (stmtUserCount.get(s.session_id) as { count: number }).count
+    const count = (stmtCount.get(s.session_id) as { count: number }).count
     const label = s.alias || s.cwd
     console.log(
       s.session_id.slice(0, 10).padEnd(12) +
       s.state.padEnd(12) +
       s.source.padEnd(8) +
-      String(insightCount).padEnd(10) +
-      String(userCount).padEnd(8) +
+      String(count).padEnd(10) +
       formatRelative(s.last_activity).padEnd(13) +
       label
     )
@@ -251,21 +218,16 @@ function cmdInsights(db: Database.Database, targetSession: SessionRow, args: Arg
     ? getChain(db, targetSession.session_id)
     : [targetSession.session_id]
 
-  const placeholders = sessionIds.map(() => '?').join(',')
-  const allInsights = db.prepare(
-    `SELECT id, content, timestamp, source, session_id as source_session FROM insights
-     WHERE session_id IN (${placeholders})
-     ORDER BY timestamp DESC, id DESC`
-  ).all(...sessionIds) as InsightRow[]
+  // Count totals
+  const stmtCount = db.prepare('SELECT COUNT(*) as count FROM insights WHERE session_id = ?')
+  const totalAvailable = sessionIds.reduce(
+    (sum, id) => sum + (stmtCount.get(id) as { count: number }).count, 0
+  )
 
-  const allPrimaryInsights = allInsights.filter(ins => ins.source !== 'user')
-  const totalPrimaryAvailable = allPrimaryInsights.length
-  const totalUserPrompts = allInsights.length - totalPrimaryAvailable
-
-  let displayedPrimaryInsights = allPrimaryInsights
-  let totalMatched: number | undefined
+  let insights: (InsightRow & { source_session?: string })[]
 
   if (args.grep) {
+    // Grep mode: fetch all, filter in JS, then apply limit+offset
     let re: RegExp
     try {
       re = new RegExp(args.grep, 'i')
@@ -274,72 +236,66 @@ function cmdInsights(db: Database.Database, targetSession: SessionRow, args: Arg
       process.exit(1)
     }
 
-    displayedPrimaryInsights = allPrimaryInsights.filter(ins => re.test(ins.content))
-    totalMatched = displayedPrimaryInsights.length
-  }
+    const placeholders = sessionIds.map(() => '?').join(',')
+    const allInsights = db.prepare(
+      `SELECT content, timestamp, source, session_id as source_session FROM insights
+       WHERE session_id IN (${placeholders})
+       ORDER BY timestamp DESC`
+    ).all(...sessionIds) as (InsightRow & { source_session: string })[]
 
-  const primaryPage = displayedPrimaryInsights.slice(args.offset, args.offset + args.limit)
-  const primaryIds = new Set(primaryPage.map(ins => ins.id))
-  const attachedUserIds = new Set<number>()
+    const matched = allInsights.filter(ins => re.test(ins.content))
+    const totalMatched = matched.length
+    insights = matched.slice(args.offset, args.offset + args.limit)
 
-  // Attach each user prompt to the nearest newer primary insight.
-  let currentPrimaryId: number | null = null
-  const pendingLeadingUserIds: number[] = []
-  for (const ins of allInsights) {
-    if (ins.source === 'user') {
-      if (currentPrimaryId == null) {
-        pendingLeadingUserIds.push(ins.id)
-      } else if (primaryIds.has(currentPrimaryId)) {
-        attachedUserIds.add(ins.id)
-      }
-      continue
+    outputInsights(targetSession, insights, args, {
+      showing: insights.length,
+      totalAvailable,
+      totalMatched,
+      isChain: args.chain,
+      sessionCount: sessionIds.length,
+    })
+  } else {
+    // Normal mode: SQL limit+offset
+    if (sessionIds.length === 1) {
+      insights = db.prepare(
+        `SELECT content, timestamp, source FROM insights
+         WHERE session_id = ?
+         ORDER BY timestamp DESC
+         LIMIT ? OFFSET ?`
+      ).all(targetSession.session_id, args.limit, args.offset) as InsightRow[]
+    } else {
+      const placeholders = sessionIds.map(() => '?').join(',')
+      insights = db.prepare(
+        `SELECT content, timestamp, source, session_id as source_session FROM insights
+         WHERE session_id IN (${placeholders})
+         ORDER BY timestamp DESC
+         LIMIT ? OFFSET ?`
+      ).all(...sessionIds, args.limit, args.offset) as (InsightRow & { source_session: string })[]
     }
 
-    currentPrimaryId = ins.id
-    if (pendingLeadingUserIds.length > 0) {
-      if (primaryIds.has(currentPrimaryId)) {
-        for (const userId of pendingLeadingUserIds) {
-          attachedUserIds.add(userId)
-        }
-      }
-      pendingLeadingUserIds.length = 0
-    }
+    outputInsights(targetSession, insights, args, {
+      showing: insights.length,
+      totalAvailable,
+      isChain: args.chain,
+      sessionCount: sessionIds.length,
+    })
   }
-
-  const renderedInsights = allInsights.filter(ins => (
-    primaryIds.has(ins.id) || attachedUserIds.has(ins.id)
-  ))
-
-  outputInsights(targetSession, renderedInsights, args, {
-    showing: primaryPage.length,
-    totalPrimaryAvailable,
-    totalMatched,
-    attachedUserPrompts: attachedUserIds.size,
-    totalUserPrompts,
-    isChain: args.chain,
-    sessionCount: sessionIds.length,
-  })
 }
 
 interface OutputMeta {
   showing: number
-  totalPrimaryAvailable: number
+  totalAvailable: number
   totalMatched?: number
-  attachedUserPrompts: number
-  totalUserPrompts: number
   isChain: boolean
   sessionCount: number
 }
 
 function outputInsights(
   session: SessionRow,
-  insights: InsightRow[],
+  insights: (InsightRow & { source_session?: string })[],
   args: Args,
   meta: OutputMeta
 ) {
-  const newestTimestamp = insights[0]?.timestamp
-  const oldestTimestamp = insights[insights.length - 1]?.timestamp
-
   if (args.json) {
     console.log(JSON.stringify({
       session: {
@@ -350,24 +306,17 @@ function outputInsights(
         source: session.source,
         predecessor_id: session.predecessor_id || undefined,
       },
-      order: 'newest_first',
       showing: meta.showing,
-      total_primary_available: meta.totalPrimaryAvailable,
-      ...(meta.totalMatched != null ? { total_matched_primary: meta.totalMatched } : {}),
-      attached_user_prompts: meta.attachedUserPrompts,
-      total_user_prompts: meta.totalUserPrompts,
+      total_available: meta.totalAvailable,
+      ...(meta.totalMatched != null ? { total_matched: meta.totalMatched } : {}),
       offset: args.offset,
       limit: args.limit,
       ...(args.grep ? { grep: args.grep } : {}),
       ...(meta.isChain ? { chain_sessions: meta.sessionCount } : {}),
-      ...(newestTimestamp ? { newest_timestamp: newestTimestamp } : {}),
-      ...(oldestTimestamp ? { oldest_timestamp: oldestTimestamp } : {}),
       insights: insights.map(ins => ({
         content: ins.content,
-        source: ins.source,
-        ...(ins.source_session !== session.session_id
-          ? { session: ins.source_session.slice(0, 8) }
-          : {}),
+        ...(ins.source ? { source: ins.source } : {}),
+        ...(ins.source_session ? { session: ins.source_session.slice(0, 8) } : {}),
       })),
     }, null, 2))
     return
@@ -375,15 +324,7 @@ function outputInsights(
 
   // Header
   const alias = session.alias ? ` (${session.alias})` : ''
-  const headerParts = [
-    `session: ${session.session_id.slice(0, 8)}${alias}`,
-    `state: ${session.state}`,
-    'order: newest first',
-  ]
-  if (newestTimestamp) {
-    headerParts.push(`newest: ${formatBoundaryTime(newestTimestamp)}`)
-  }
-  console.log(`[${headerParts.join(' | ')}]`)
+  console.log(`[session: ${session.session_id.slice(0, 8)}${alias} | state: ${session.state}]`)
 
   if (meta.isChain) {
     console.log(`[chain: ${meta.sessionCount} sessions]`)
@@ -391,19 +332,13 @@ function outputInsights(
   console.log()
 
   if (insights.length === 0) {
-    if (meta.totalPrimaryAvailable === 0 && meta.totalUserPrompts > 0) {
-      console.log(`No primary insights found. This session has ${meta.totalUserPrompts} user prompts recorded.`)
-    } else if (args.grep && meta.totalMatched === 0) {
-      console.log(`No primary insights matched grep "${args.grep}".`)
-    } else {
-      console.log('No primary insights found.')
-    }
+    console.log('No insights found.')
   } else {
     for (const ins of insights) {
       // Build separator with metadata tags
       const tags: string[] = []
       if (ins.source === 'user') tags.push('user')
-      if (ins.source_session !== session.session_id) {
+      if (ins.source_session && ins.source_session !== session.session_id) {
         tags.push(ins.source_session.slice(0, 8))
       }
       console.log(tags.length > 0 ? `--- [${tags.join(' | ')}] ---` : '---')
@@ -414,23 +349,15 @@ function outputInsights(
 
   // Footer stats
   const parts: string[] = []
+  parts.push(`${meta.showing} / ${meta.totalAvailable} insights shown`)
   if (meta.totalMatched != null) {
-    parts.push(`${meta.showing} / ${meta.totalMatched} matched primary insights shown`)
-    parts.push(`${meta.totalPrimaryAvailable} total primary insights`)
-  } else {
-    parts.push(`${meta.showing} / ${meta.totalPrimaryAvailable} primary insights shown`)
-  }
-  if (meta.attachedUserPrompts > 0) {
-    parts.push(`+${meta.attachedUserPrompts} user prompts attached`)
+    parts.push(`${meta.totalMatched} matched grep`)
   }
   if (args.grep) {
     parts.push(`grep: "${args.grep}"`)
   }
   if (args.offset > 0) {
     parts.push(`offset: ${args.offset}`)
-  }
-  if (oldestTimestamp && oldestTimestamp !== newestTimestamp) {
-    parts.push(`oldest: ${formatBoundaryTime(oldestTimestamp)}`)
   }
   console.log(`[${parts.join(' | ')}]`)
 }

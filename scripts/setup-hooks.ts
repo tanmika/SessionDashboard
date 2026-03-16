@@ -37,6 +37,52 @@ function hasHookScript(eventHooks: unknown[], scriptName: string): boolean {
   })
 }
 
+function removeHookScript(eventHooks: unknown[], scriptName: string): unknown[] {
+  return eventHooks.flatMap((item: any) => {
+    if (typeof item?.command === 'string') {
+      return item.command.includes(scriptName) ? [] : [item]
+    }
+
+    if (Array.isArray(item?.hooks)) {
+      const hooks = item.hooks.filter(
+        (hook: any) => !(typeof hook?.command === 'string' && hook.command.includes(scriptName))
+      )
+      if (hooks.length === 0) return []
+      return [{ ...item, hooks }]
+    }
+
+    return [item]
+  })
+}
+
+function ensureCodexHooksEnabled(configPath: string): { created: boolean; updated: boolean } {
+  const existed = fs.existsSync(configPath)
+  let toml = existed ? fs.readFileSync(configPath, 'utf-8') : ''
+  const original = toml
+
+  const codexHooksLineRe = /^(\s*codex_hooks\s*=\s*)(true|false)(\s*)$/m
+  if (codexHooksLineRe.test(toml)) {
+    toml = toml.replace(codexHooksLineRe, '$1true$3')
+  } else if (toml.includes('[features]')) {
+    toml = toml.replace('[features]', '[features]\ncodex_hooks = true')
+  } else if (toml.trim().length === 0) {
+    toml = '[features]\ncodex_hooks = true\n'
+  } else {
+    toml = '[features]\ncodex_hooks = true\n\n' + toml
+  }
+
+  if (toml === original) {
+    return { created: false, updated: false }
+  }
+
+  if (existed) {
+    fs.copyFileSync(configPath, configPath + '.bak')
+  }
+  fs.writeFileSync(configPath, toml)
+
+  return { created: !existed, updated: true }
+}
+
 export function setupHooks(options?: { packageRoot?: string }) {
   const packageRoot = options?.packageRoot || path.resolve(
     path.dirname(fileURLToPath(import.meta.url)), '..'
@@ -132,7 +178,7 @@ export function setupCodexHooks(options?: { packageRoot?: string }) {
   const CODEX_DIR = path.join(os.homedir(), '.codex')
   const HOOKS_JSON_PATH = path.join(CODEX_DIR, 'hooks.json')
   const CONFIG_TOML_PATH = path.join(CODEX_DIR, 'config.toml')
-  const SESSION_ID_HOOK_SCRIPT = path.resolve(packageRoot, 'hooks', 'session-id-hook.sh')
+  const CODEX_HOOK_SCRIPT = path.resolve(packageRoot, 'hooks', 'codex-session-hook.sh')
 
   console.log('\n  Session Dashboard — Codex Hook Setup\n  ' + '─'.repeat(38))
 
@@ -142,34 +188,14 @@ export function setupCodexHooks(options?: { packageRoot?: string }) {
   }
 
   // 1. Ensure [features] codex_hooks = true in config.toml
-  let configUpdated = false
-  if (fs.existsSync(CONFIG_TOML_PATH)) {
-    let toml = fs.readFileSync(CONFIG_TOML_PATH, 'utf-8')
-    if (!toml.includes('codex_hooks')) {
-      // Find [features] section or create it
-      if (toml.includes('[features]')) {
-        toml = toml.replace('[features]', '[features]\ncodex_hooks = true')
-      } else {
-        // Insert before the first [table] section (TOML requires root keys before tables)
-        const firstTable = toml.search(/^\[(?!features)/m)
-        if (firstTable > 0) {
-          toml = toml.slice(0, firstTable) + '[features]\ncodex_hooks = true\n\n' + toml.slice(firstTable)
-        } else {
-          toml += '\n[features]\ncodex_hooks = true\n'
-        }
-      }
-      fs.copyFileSync(CONFIG_TOML_PATH, CONFIG_TOML_PATH + '.bak')
-      fs.writeFileSync(CONFIG_TOML_PATH, toml)
-      console.log('  ✓ Enabled codex_hooks feature flag in config.toml')
-      configUpdated = true
-    } else {
-      console.log('  ✓ codex_hooks feature flag already enabled')
-    }
+  const configResult = ensureCodexHooksEnabled(CONFIG_TOML_PATH)
+  if (configResult.updated) {
+    console.log(`  ✓ ${configResult.created ? 'Created' : 'Updated'} config.toml with codex_hooks = true`)
   } else {
-    console.log('  ✗ config.toml not found. Skipping feature flag.')
+    console.log('  ✓ codex_hooks feature flag already enabled')
   }
 
-  // 2. Write/update hooks.json with session-id hook
+  // 2. Write/update hooks.json with Codex SessionStart/Stop hooks
   let hooksConfig: any = { hooks: {} }
   let hooksExisted = false
 
@@ -184,31 +210,49 @@ export function setupCodexHooks(options?: { packageRoot?: string }) {
     }
   }
 
-  // Check if session-id hook already registered
-  const sessionStartHooks: unknown[] = Array.isArray(hooksConfig.hooks.SessionStart)
+  const sessionStartHooksRaw: unknown[] = Array.isArray(hooksConfig.hooks.SessionStart)
     ? hooksConfig.hooks.SessionStart
     : []
+  const stopHooksRawUnfiltered: unknown[] = Array.isArray(hooksConfig.hooks.Stop)
+    ? hooksConfig.hooks.Stop
+    : []
 
-  if (hasHookScript(sessionStartHooks, 'session-id-hook.sh')) {
-    console.log('  ✓ Session ID hook already installed in hooks.json')
-  } else {
-    const entry = {
-      hooks: [{ type: 'command', command: `bash ${SESSION_ID_HOOK_SCRIPT}`, timeout: 5 }],
-    }
-    hooksConfig.hooks.SessionStart = [...sessionStartHooks, entry]
+  const sessionStartHooks = removeHookScript(sessionStartHooksRaw, 'session-id-hook.sh')
+  const stopHooksRaw = removeHookScript(stopHooksRawUnfiltered, 'stop-hook.sh')
+  const hasStartHook = hasHookScript(sessionStartHooks, 'codex-session-hook.sh')
+  const hasStopHook = hasHookScript(stopHooksRaw, 'codex-session-hook.sh')
 
+  if (!hasStartHook) {
+    sessionStartHooks.push({
+      hooks: [{ type: 'command', command: `bash ${CODEX_HOOK_SCRIPT}`, timeout: 5 }],
+    })
+  }
+  if (!hasStopHook) {
+    stopHooksRaw.push({
+      hooks: [{ type: 'command', command: `bash ${CODEX_HOOK_SCRIPT}`, timeout: 5 }],
+    })
+  }
+
+  hooksConfig.hooks.SessionStart = sessionStartHooks
+  hooksConfig.hooks.Stop = stopHooksRaw
+
+  const hooksChanged =
+    !hasStartHook ||
+    !hasStopHook ||
+    sessionStartHooks.length !== sessionStartHooksRaw.length ||
+    stopHooksRaw.length !== stopHooksRawUnfiltered.length
+
+  if (hooksChanged) {
     if (hooksExisted) {
       fs.copyFileSync(HOOKS_JSON_PATH, HOOKS_JSON_PATH + '.bak')
     }
     fs.writeFileSync(HOOKS_JSON_PATH, JSON.stringify(hooksConfig, null, 2) + '\n')
-    console.log('  ✓ Added session-id hook to hooks.json')
+    console.log('  ✓ Installed Codex SessionStart/Stop hooks in hooks.json')
+  } else {
+    console.log('  ✓ Codex SessionStart/Stop hooks already installed in hooks.json')
   }
 
-  if (configUpdated) {
-    console.log('  ⚡ Restart Codex CLI for hooks to take effect.\n')
-  } else {
-    console.log()
-  }
+  console.log('  ⚡ Restart Codex CLI for hooks to take effect.\n')
 }
 
 // Direct execution support

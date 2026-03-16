@@ -266,12 +266,25 @@ export class CodexWatcher {
   }
 
   private extractAndEmitInsights(state: RolloutState, text: string) {
+    // Try insight blocks first
     const blocks = extractInsightBlocks(text)
-    for (const block of blocks) {
-      const hash = contentHash(block)
+    if (blocks.length > 0) {
+      for (const block of blocks) {
+        const hash = contentHash(block)
+        if (state.seenHashes.has(hash)) continue
+        state.seenHashes.add(hash)
+        this.callbacks.onInsight(state.sessionId, block)
+      }
+      return
+    }
+
+    // Fallback: significant text paragraphs
+    const paragraphs = extractSignificantText(text)
+    for (const para of paragraphs) {
+      const hash = contentHash(para)
       if (state.seenHashes.has(hash)) continue
       state.seenHashes.add(hash)
-      this.callbacks.onInsight(state.sessionId, block)
+      this.callbacks.onInsight(state.sessionId, para)
     }
   }
 }

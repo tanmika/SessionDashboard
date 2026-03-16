@@ -190,12 +190,26 @@ export class TranscriptWatcher {
   }
 
   private extractAndEmit(state: WatchState, text: string) {
+    // Try insight blocks first
     const insightBlocks = extractInsightBlocks(text)
-    for (const block of insightBlocks) {
-      const hash = contentHash(block)
+
+    if (insightBlocks.length > 0) {
+      for (const block of insightBlocks) {
+        const hash = contentHash(block)
+        if (state.seenHashes.has(hash)) continue
+        state.seenHashes.add(hash)
+        this.onInsight(state.sessionId, block)
+      }
+      return
+    }
+
+    // Fallback: significant text paragraphs
+    const paragraphs = extractSignificantText(text)
+    for (const para of paragraphs) {
+      const hash = contentHash(para)
       if (state.seenHashes.has(hash)) continue
       state.seenHashes.add(hash)
-      this.onInsight(state.sessionId, block)
+      this.onInsight(state.sessionId, para)
     }
   }
 }
