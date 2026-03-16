@@ -14,6 +14,34 @@ interface WatchState {
 }
 
 const MIN_USER_INPUT_LENGTH = 5
+const MAX_USER_INPUT_LENGTH = 2000
+
+/** Patterns that indicate system-generated content, not real user input */
+const USER_INPUT_NOISE_PATTERNS = [
+  /^\[Request interrupted/,                      // Claude Code interrupt marker
+  /^<command-name>/,                             // Slash command XML
+  /^<local-command-/,                            // Local command output/caveat
+  /╭───.*Claude Code/,                           // TUI welcome screen
+  /^Implement the following plan:/,              // Hook-injected plan text
+]
+
+/** Patterns for sensitive credentials that should be redacted */
+const CREDENTIAL_PATTERNS = [
+  /(github_pat_|ghp_|gho_|ghs_)[A-Za-z0-9_]+/g,
+  /sk-[a-f0-9]{20,}/g,
+]
+
+function isUserInputNoise(text: string): boolean {
+  return USER_INPUT_NOISE_PATTERNS.some(p => p.test(text))
+}
+
+function redactCredentials(text: string): string {
+  let result = text
+  for (const pattern of CREDENTIAL_PATTERNS) {
+    result = result.replace(pattern, '[REDACTED]')
+  }
+  return result
+}
 
 export class TranscriptWatcher {
   private watchers = new Map<string, WatchState>()
@@ -130,12 +158,16 @@ export class TranscriptWatcher {
           .join('\n')
       }
       text = text.trim()
-      if (text.length >= MIN_USER_INPUT_LENGTH) {
-        const hash = contentHash(text)
-        if (!state.seenHashes.has(hash)) {
-          state.seenHashes.add(hash)
-          this.onUserInput(state.sessionId, text)
-        }
+      if (text.length < MIN_USER_INPUT_LENGTH) return
+      if (isUserInputNoise(text)) return
+      text = redactCredentials(text)
+      if (text.length > MAX_USER_INPUT_LENGTH) {
+        text = text.substring(0, MAX_USER_INPUT_LENGTH) + ' [truncated]'
+      }
+      const hash = contentHash(text)
+      if (!state.seenHashes.has(hash)) {
+        state.seenHashes.add(hash)
+        this.onUserInput(state.sessionId, text)
       }
       return
     }

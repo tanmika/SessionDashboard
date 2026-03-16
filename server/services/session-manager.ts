@@ -46,6 +46,7 @@ export class SessionManager {
   private stmtGetInsightsPaged: Database.Statement
   private stmtGetEventsPaged: Database.Statement
   private stmtGetEventsCount: Database.Statement
+  private stmtCheckInsightExists: Database.Statement
 
   constructor(private db: Database.Database) {
     this.transcriptWatcher = new TranscriptWatcher(
@@ -88,6 +89,9 @@ export class SessionManager {
     )
     this.stmtGetEventsCount = db.prepare(
       'SELECT COUNT(*) as count FROM events WHERE session_id = ?'
+    )
+    this.stmtCheckInsightExists = db.prepare(
+      'SELECT 1 FROM insights WHERE session_id = ? AND content = ? AND source = ? LIMIT 1'
     )
 
     this.restoreFromDb()
@@ -390,6 +394,9 @@ export class SessionManager {
   addInsight(sessionId: string, content: string, source: 'transcript' | 'hook' | 'user' = 'transcript'): Insight | null {
     const session = this.sessions.get(sessionId)
     if (!session) return null
+
+    // DB-level dedup: skip if identical content already exists for this session+source
+    if (this.stmtCheckInsightExists.get(sessionId, content, source)) return null
 
     const now = new Date().toISOString()
     const result = this.stmtInsertInsight.run(sessionId, content, now, source)
