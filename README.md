@@ -124,7 +124,7 @@ hook script                         CodexWatcher
                 ├── SQLite  ─────────────────── persist events & insights
                 ├── TranscriptWatcher ───────── watch Claude transcript JSONL
                 ├── CodexWatcher ────────────── watch ~/.codex/sessions/ rollouts
-                │       └── shared insight-extractor (★ Insight blocks or fallback)
+                │       └── shared insight-extractor (★ Insight blocks only)
                 └── WebSocket broadcast
                         │
                         ▼
@@ -135,9 +135,8 @@ hook script                         CodexWatcher
 - **Claude Code** = active push (hooks → HTTP POST → server)
 - **Codex CLI** = passive discovery (fs.watch rollout directory → incremental JSONL parsing)
 
-**Insight extraction** uses a two-tier strategy (shared by both sources):
+**Insight extraction** only persists explicit `★ Insight` blocks (shared by both sources).
 1. Regex match for `` `★ Insight ───` `` blocks (explanatory mode)
-2. Fallback to text paragraphs longer than 150 characters
 
 MD5 hashing prevents duplicate insights across incremental file reads.
 
@@ -175,7 +174,7 @@ session-dashboard/
 │   │   ├── transcript-watcher.ts # Claude transcript incremental JSONL parsing
 │   │   └── codex-watcher.ts      # Codex rollout directory monitoring + JSONL parsing
 │   ├── utils/
-│   │   └── insight-extractor.ts  # Shared insight extraction (★ blocks + fallback)
+│   │   └── insight-extractor.ts  # Shared insight extraction (★ blocks only)
 │   └── ws.ts                 # WebSocket server
 ├── shared/
 │   └── types.ts              # Shared TypeScript types

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { useSessionStore } from '../stores/session'
+import { usePreferencesStore } from '../stores/preferences'
 import type { SessionEvent, Insight } from '../../shared/types'
 import { formatRelativeTime } from '../utils/time'
 import { renderMarkdown } from '../utils/markdown'
 
 const store = useSessionStore()
+const prefs = usePreferencesStore()
 const PAGE_SIZE = 100
 
 // Alias inline edit
@@ -63,29 +65,42 @@ async function loadMoreEvents() {
 const extraInsights = ref<Insight[]>([])
 const loadingMoreInsights = ref(false)
 const allInsightsLoaded = ref(false)
+const totalInsights = ref(0)
 
-const displayedInsights = computed(() => {
+const allInsights = computed(() => {
   if (!store.selectedSession) return []
   return [...store.selectedSession.insights, ...extraInsights.value]
+})
+
+const displayedInsights = computed(() => {
+  if (prefs.showUserPrompts) return allInsights.value
+  return allInsights.value.filter(ins => ins.source !== 'user')
 })
 
 const hasMoreInsights = computed(() =>
   !allInsightsLoaded.value &&
   store.selectedSession != null &&
-  store.selectedSession.total_insights > displayedInsights.value.length
+  totalInsights.value > displayedInsights.value.length
 )
 
 async function loadMoreInsights() {
   const id = store.selectedSessionId
   if (!id || loadingMoreInsights.value) return
-  const offset = displayedInsights.value.length
+  const offset = prefs.showUserPrompts ? allInsights.value.length : displayedInsights.value.length
   loadingMoreInsights.value = true
   try {
-    const res = await fetch(`/api/sessions/${id}/insights?limit=${PAGE_SIZE}&offset=${offset}`)
+    let url = `/api/sessions/${id}/insights?limit=${PAGE_SIZE}&offset=${offset}`
+    if (!prefs.showUserPrompts) url += '&exclude_source=user'
+    const res = await fetch(url)
     const json = await res.json()
     const newInsights = json.data || []
+    totalInsights.value = json.total ?? totalInsights.value
     extraInsights.value.push(...newInsights)
-    if (newInsights.length < PAGE_SIZE) allInsightsLoaded.value = true
+    if (displayedInsights.value.length >= totalInsights.value) {
+      allInsightsLoaded.value = true
+    } else if (newInsights.length < PAGE_SIZE) {
+      allInsightsLoaded.value = true
+    }
   } catch { /* ignore */ }
   loadingMoreInsights.value = false
 }
@@ -102,6 +117,7 @@ watch(
     extraInsights.value = []
     allInsightsLoaded.value = false
     loadingMoreInsights.value = false
+    totalInsights.value = store.selectedSession?.total_insights ?? 0
 
     // Reset events pagination & load first page
     events.value = []
@@ -125,6 +141,25 @@ watch(
       loadError.value = true
     }
     loading.value = false
+  },
+  { immediate: true }
+)
+
+watch(
+  () => [store.selectedSessionId, prefs.showUserPrompts] as const,
+  async ([id]) => {
+    totalInsights.value = prefs.showUserPrompts
+      ? (store.selectedSession?.total_insights ?? 0)
+      : displayedInsights.value.length
+
+    if (!id || prefs.showUserPrompts) return
+
+    try {
+      const res = await fetch(`/api/sessions/${id}/insights?limit=0&offset=0&exclude_source=user`)
+      const json = await res.json()
+      totalInsights.value = json.total ?? totalInsights.value
+      allInsightsLoaded.value = displayedInsights.value.length >= totalInsights.value
+    } catch { /* ignore */ }
   },
   { immediate: true }
 )
@@ -203,13 +238,18 @@ watch(
           <span>Insights ({{ displayedInsights.length }}{{ store.selectedSession.total_insights > displayedInsights.length ? ` / ${store.selectedSession.total_insights}` : '' }})</span>
           <span class="toggle-icon">{{ insightsExpanded ? '▾' : '▸' }}</span>
         </h3>
-        <div v-if="insightsExpanded" class="timeline">
+        <div v-if="insightsExpanded">
+          <div class="timeline">
           <div
             v-for="insight in displayedInsights"
             :key="insight.id"
             class="timeline-item insight-item"
+            :class="{ 'user-prompt-item': insight.source === 'user' }"
           >
-            <span class="timeline-time">{{ formatRelativeTime(insight.timestamp) }}</span>
+            <div class="insight-header">
+              <span class="timeline-time">{{ formatRelativeTime(insight.timestamp) }}</span>
+              <span v-if="insight.source === 'user'" class="source-tag user-tag">user</span>
+            </div>
             <div class="md-content" v-html="renderMarkdown(insight.content)" />
           </div>
           <div v-if="displayedInsights.length === 0" class="empty-hint">
@@ -218,6 +258,7 @@ watch(
           <button v-if="hasMoreInsights" class="load-more-btn" @click="loadMoreInsights" :disabled="loadingMoreInsights">
             {{ loadingMoreInsights ? '加载中...' : '加载更多' }}
           </button>
+          </div>
         </div>
       </section>
 
@@ -573,6 +614,46 @@ watch(
   font-size: 13px;
   padding: 4px 8px;
   outline: none;
+}
+
+.user-prompt-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  margin-bottom: 8px;
+  user-select: none;
+}
+
+.user-prompt-toggle input {
+  accent-color: var(--accent);
+}
+
+.user-prompt-item {
+  background: rgba(255, 180, 50, 0.06) !important;
+  border-color: rgba(255, 180, 50, 0.15) !important;
+}
+
+.insight-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.source-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.user-tag {
+  background: rgba(255, 180, 50, 0.15);
+  color: #f0b040;
 }
 
 .load-more-btn {

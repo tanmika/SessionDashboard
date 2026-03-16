@@ -64,6 +64,7 @@ export interface HookEventPayload {
   transcript_path?: string
   cwd?: string
   hook_event_name: HookEventName
+  dashboard_source?: 'claude' | 'codex'
   // SessionStart: how the session was initiated
   matcher?: SessionStartMatcher
   // Notification sub-type
@@ -74,6 +75,12 @@ export interface HookEventPayload {
   subagent_id?: string
   // Timestamp (ISO string, set by receiver if absent)
   timestamp?: string
+  // Codex-specific metadata
+  model?: string
+  permission_mode?: string
+  stop_hook_active?: boolean
+  last_assistant_message?: string
+  codex_hook_source?: string
 }
 
 // ─── Persisted Event ───
@@ -96,7 +103,7 @@ export interface Insight {
   session_id: string
   content: string
   timestamp: string
-  source: 'transcript' | 'hook'
+  source: 'transcript' | 'hook' | 'user'
 }
 
 // ─── Session (aggregated view) ───

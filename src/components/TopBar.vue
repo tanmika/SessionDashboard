@@ -1,10 +1,14 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { useSessionStore } from '../stores/session'
+import { usePreferencesStore } from '../stores/preferences'
 import type { SessionState } from '../../shared/types'
 import HooksStatus from './HooksStatus.vue'
 import SessionPicker from './SessionPicker.vue'
 
 const store = useSessionStore()
+const prefs = usePreferencesStore()
+const showSettings = ref(false)
 
 const filters: { label: string; value: SessionState | 'all' | 'needs_attention'; attention?: boolean }[] = [
   { label: 'All', value: 'all' },
@@ -36,6 +40,15 @@ const filters: { label: string; value: SessionState | 'all' | 'needs_attention';
         <div class="status-row">
           <SessionPicker />
           <HooksStatus />
+          <div class="settings-wrap">
+            <button class="settings-btn" @click="showSettings = !showSettings">Settings</button>
+            <div v-if="showSettings" class="settings-panel">
+              <label class="setting-item">
+                <input type="checkbox" v-model="prefs.showUserPrompts" />
+                <span>Show user prompts in insights</span>
+              </label>
+            </div>
+          </div>
           <div class="connection-status" :class="{ connected: store.wsConnected }">
             {{ store.wsConnected ? 'Connected' : 'Reconnecting...' }}
           </div>
@@ -125,6 +138,54 @@ const filters: { label: string; value: SessionState | 'all' | 'needs_attention';
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.settings-wrap {
+  position: relative;
+}
+
+.settings-btn {
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.settings-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.settings-panel {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 8px;
+  padding: 12px 16px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  z-index: 50;
+  min-width: 220px;
+}
+
+.setting-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.setting-item input {
+  accent-color: var(--accent);
 }
 
 .connection-status {

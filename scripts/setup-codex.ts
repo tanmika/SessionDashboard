@@ -1,6 +1,6 @@
 /**
  * Session Dashboard — Codex Insight Injection Setup
- * Usage: npm run setup:codex
+ * Usage: npm run setup:codex  (or called by CLI `session-dashboard init`)
  *
  * Injects ★ Insight output-style instructions into ~/.codex/AGENTS.md
  * so Codex CLI produces structured insight blocks that the dashboard can parse.
@@ -11,6 +11,7 @@
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { INSIGHT_USAGE_MANUAL } from '../shared/insight-usage.js'
 
 const AGENTS_PATH = path.join(os.homedir(), '.codex', 'AGENTS.md')
 const CODEX_DIR = path.join(os.homedir(), '.codex')
@@ -58,60 +59,88 @@ Codex lacks a SessionEnd event, so timeout-based inference is the only option."
 Bad: "It's important to write clean code and follow best practices."
 ${MARKER_END}`
 
-// ─── Main ───
+const USAGE_MARKER_START = '<---session-dashboard-usage--->'
+const USAGE_MARKER_END = '<---/session-dashboard-usage--->'
 
-console.log('\n  Session Dashboard — Codex Insight Setup\n  ' + '─'.repeat(42))
+const USAGE_BLOCK = `${USAGE_MARKER_START}
+${INSIGHT_USAGE_MANUAL}
+${USAGE_MARKER_END}`
 
-// Ensure ~/.codex/ exists
-if (!fs.existsSync(CODEX_DIR)) {
-  console.log('\n  ✗ ~/.codex/ directory not found.')
-  console.log('    Install Codex CLI first, then re-run this script.\n')
-  process.exit(1)
-}
+/** Upsert a marker-delimited block into content. Returns { content, changed }. */
+function upsertBlock(
+  content: string,
+  markerStart: string,
+  markerEnd: string,
+  block: string,
+  label: string
+): { content: string; changed: boolean } {
+  if (content.includes(markerStart)) {
+    const startIdx = content.indexOf(markerStart)
+    const endIdx = content.indexOf(markerEnd)
 
-// Read existing AGENTS.md or start fresh
-let content = ''
-let existed = false
-
-if (fs.existsSync(AGENTS_PATH)) {
-  existed = true
-  content = fs.readFileSync(AGENTS_PATH, 'utf-8')
-}
-
-// Check for existing injection
-if (content.includes(MARKER_START)) {
-  // Replace existing block
-  const startIdx = content.indexOf(MARKER_START)
-  const endIdx = content.indexOf(MARKER_END)
-
-  if (endIdx === -1) {
-    // Malformed: has start but no end — append end and replace
-    console.log('  ⚠ Found start marker without end marker, replacing block...')
-    content = content.slice(0, startIdx) + INJECTION_BLOCK + '\n'
-  } else {
-    const oldBlock = content.slice(startIdx, endIdx + MARKER_END.length)
-    if (oldBlock === INJECTION_BLOCK) {
-      console.log('\n  ✓ Insight instructions already up to date, nothing to do.')
-      console.log(`\n  File: ${AGENTS_PATH}\n`)
-      process.exit(0)
+    if (endIdx === -1) {
+      console.log(`  ⚠ ${label}: found start marker without end, replacing...`)
+      return { content: content.slice(0, startIdx) + block + '\n', changed: true }
     }
-    // Update in place
-    content = content.slice(0, startIdx) + INJECTION_BLOCK + content.slice(endIdx + MARKER_END.length)
-    console.log('\n  ↻ Updated existing insight instructions block.')
+
+    const oldBlock = content.slice(startIdx, endIdx + markerEnd.length)
+    if (oldBlock === block) {
+      console.log(`  ✓ ${label}: already up to date.`)
+      return { content, changed: false }
+    }
+
+    console.log(`  ↻ ${label}: updated.`)
+    return {
+      content: content.slice(0, startIdx) + block + content.slice(endIdx + markerEnd.length),
+      changed: true,
+    }
   }
-} else {
-  // Append new block
+
+  // Append
   const separator = content.length > 0 && !content.endsWith('\n\n') ? '\n\n' : content.endsWith('\n') ? '\n' : '\n\n'
-  content = content + separator + INJECTION_BLOCK + '\n'
-  console.log(`\n  ✓ ${existed ? 'Appended' : 'Created'} insight instructions.`)
+  console.log(`  ✓ ${label}: added.`)
+  return { content: content + separator + block + '\n', changed: true }
 }
 
-// Backup if file existed
-if (existed) {
-  fs.copyFileSync(AGENTS_PATH, AGENTS_PATH + '.bak')
-  console.log(`  Backup → ${AGENTS_PATH}.bak`)
+export function setupCodex() {
+  console.log('\n  Session Dashboard — Codex Insight Setup\n  ' + '─'.repeat(42))
+
+  if (!fs.existsSync(CODEX_DIR)) {
+    console.log('\n  ✗ ~/.codex/ directory not found.')
+    console.log('    Install Codex CLI first, then re-run this script.\n')
+    return
+  }
+
+  let content = ''
+  let existed = false
+
+  if (fs.existsSync(AGENTS_PATH)) {
+    existed = true
+    content = fs.readFileSync(AGENTS_PATH, 'utf-8')
+  }
+
+  // Upsert both blocks
+  const r1 = upsertBlock(content, MARKER_START, MARKER_END, INJECTION_BLOCK, 'Insight output format')
+  const r2 = upsertBlock(r1.content, USAGE_MARKER_START, USAGE_MARKER_END, USAGE_BLOCK, 'Insight recovery usage')
+
+  if (!r1.changed && !r2.changed) {
+    console.log(`\n  File: ${AGENTS_PATH}\n`)
+    return
+  }
+
+  if (existed) {
+    fs.copyFileSync(AGENTS_PATH, AGENTS_PATH + '.bak')
+    console.log(`  Backup → ${AGENTS_PATH}.bak`)
+  }
+
+  fs.writeFileSync(AGENTS_PATH, r2.content)
+  console.log(`\n  File: ${AGENTS_PATH}`)
+  console.log('  ⚡ Restart Codex CLI for changes to take effect.\n')
 }
 
-fs.writeFileSync(AGENTS_PATH, content)
-console.log(`\n  File: ${AGENTS_PATH}`)
-console.log('  ⚡ New Codex CLI sessions will now produce ★ Insight blocks.\n')
+// Direct execution support
+const isDirectRun = process.argv[1] && (
+  process.argv[1].endsWith('setup-codex.ts') ||
+  process.argv[1].endsWith('setup-codex.js')
+)
+if (isDirectRun) setupCodex()

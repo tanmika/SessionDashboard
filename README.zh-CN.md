@@ -124,7 +124,7 @@ hook 脚本                            CodexWatcher
                 ├── SQLite  ─────────────────── 持久化事件与 Insight
                 ├── TranscriptWatcher ───────── 监听 Claude transcript JSONL
                 ├── CodexWatcher ────────────── 监听 ~/.codex/sessions/ rollout
-                │       └── 共享 insight-extractor（★ Insight 块或回退段落）
+                │       └── 共享 insight-extractor（仅 ★ Insight 块）
                 └── WebSocket 广播
                         │
                         ▼
@@ -135,9 +135,8 @@ hook 脚本                            CodexWatcher
 - **Claude Code** = 主动推送（hooks → HTTP POST → server）
 - **Codex CLI** = 被动发现（fs.watch rollout 目录 → 增量 JSONL 解析）
 
-**Insight 提取**采用两级策略（双来源共享）：
+**Insight 提取**仅持久化显式 `★ Insight` 块（双来源共享）：
 1. 正则匹配 `` `★ Insight ───` `` 块（解释性模式）
-2. 回退：提取长度超过 150 字符的文本段落
 
 使用 MD5 哈希去重，避免增量读取时产生重复 Insight。
 
@@ -175,7 +174,7 @@ session-dashboard/
 │   │   ├── transcript-watcher.ts # Claude transcript 增量 JSONL 解析
 │   │   └── codex-watcher.ts      # Codex rollout 目录监控 + JSONL 解析
 │   ├── utils/
-│   │   └── insight-extractor.ts  # 共享 Insight 提取（★ 块 + 回退段落）
+│   │   └── insight-extractor.ts  # 共享 Insight 提取（仅 ★ 块）
 │   └── ws.ts                 # WebSocket 服务器
 ├── shared/
 │   └── types.ts              # 共享 TypeScript 类型

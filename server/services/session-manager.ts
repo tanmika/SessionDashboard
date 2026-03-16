@@ -46,11 +46,13 @@ export class SessionManager {
   private stmtGetInsightsPaged: Database.Statement
   private stmtGetEventsPaged: Database.Statement
   private stmtGetEventsCount: Database.Statement
+  private stmtCheckInsightExists: Database.Statement
 
   constructor(private db: Database.Database) {
-    this.transcriptWatcher = new TranscriptWatcher((sessionId, content) => {
-      this.addInsight(sessionId, content, 'transcript')
-    })
+    this.transcriptWatcher = new TranscriptWatcher(
+      (sessionId, content) => this.addInsight(sessionId, content, 'transcript'),
+      (sessionId, content) => this.addInsight(sessionId, content, 'user'),
+    )
 
     // Prepare statements
     this.stmtInsertSession = db.prepare(`
@@ -87,6 +89,9 @@ export class SessionManager {
     )
     this.stmtGetEventsCount = db.prepare(
       'SELECT COUNT(*) as count FROM events WHERE session_id = ?'
+    )
+    this.stmtCheckInsightExists = db.prepare(
+      'SELECT 1 FROM insights WHERE session_id = ? AND content = ? AND source = ? LIMIT 1'
     )
 
     this.restoreFromDb()
@@ -160,6 +165,9 @@ export class SessionManager {
       onInsight: (sessionId, content) => {
         this.addInsight(sessionId, content, 'transcript')
       },
+      onUserInput: (sessionId, content) => {
+        this.addInsight(sessionId, content, 'user')
+      },
       onEvent: (sessionId, eventName, timestamp, rawPayload) => {
         this.handleCodexEvent(sessionId, eventName, timestamp, rawPayload)
       },
@@ -189,9 +197,6 @@ export class SessionManager {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
-    // Don't resurrect ended sessions from Codex events
-    if (session.state === 'ended') return
-
     session.state = newState
     session.last_activity = timestamp
     this.persistAndBroadcast(session)
@@ -210,6 +215,48 @@ export class SessionManager {
       timestamp,
       rawPayload
     )
+
+    // User/agent messages are concrete Codex activity signals and should refresh session liveness.
+    if (eventName === 'user_message' || eventName === 'agent_message') {
+      session.state = 'active'
+      session.last_activity = timestamp
+      this.persistAndBroadcast(session)
+    }
+  }
+
+  handleCodexHookEvent(payload: HookEventPayload): Session {
+    const now = payload.timestamp || new Date().toISOString()
+    const sid = payload.session_id
+
+    let session = this.sessions.get(sid)
+    if (!session) {
+      session = this.createSession(sid, payload.cwd || '', payload.transcript_path, now, 'codex')
+    }
+
+    if (payload.cwd) session.cwd = payload.cwd
+    if (payload.transcript_path) session.transcript_path = payload.transcript_path
+    session.display_name = this.makeDisplayName(session.cwd, sid, session.alias)
+
+    this.stmtInsertEvent.run(
+      sid,
+      payload.hook_event_name,
+      payload.notification_type || null,
+      payload.tool_name || null,
+      payload.subagent_id || null,
+      now,
+      JSON.stringify(payload)
+    )
+
+    if (payload.hook_event_name === 'SessionStart') {
+      session.state = 'active'
+      session.last_activity = now
+    } else if (payload.hook_event_name === 'Stop') {
+      session.state = 'inactive'
+      session.last_activity = now
+    }
+
+    this.persistAndBroadcast(session)
+    return session
   }
 
   // ─── Handle incoming hook event (Claude Code) ───
@@ -383,9 +430,12 @@ export class SessionManager {
 
   // ─── Insight management ───
 
-  addInsight(sessionId: string, content: string, source: 'transcript' | 'hook' = 'transcript'): Insight | null {
+  addInsight(sessionId: string, content: string, source: 'transcript' | 'hook' | 'user' = 'transcript'): Insight | null {
     const session = this.sessions.get(sessionId)
     if (!session) return null
+
+    // DB-level dedup: skip if identical content already exists for this session+source
+    if (this.stmtCheckInsightExists.get(sessionId, content, source)) return null
 
     const now = new Date().toISOString()
     const result = this.stmtInsertInsight.run(sessionId, content, now, source)
@@ -436,11 +486,22 @@ export class SessionManager {
     return row.count
   }
 
-  getSessionInsights(sessionId: string, limit: number, offset: number): Insight[] {
+  getSessionInsights(sessionId: string, limit: number, offset: number, excludeSource?: string): Insight[] {
+    if (excludeSource) {
+      return this.db.prepare(
+        `SELECT * FROM insights WHERE session_id = ? AND source != ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`
+      ).all(sessionId, excludeSource, limit, offset) as Insight[]
+    }
     return this.stmtGetInsightsPaged.all(sessionId, limit, offset) as Insight[]
   }
 
-  getSessionInsightsTotal(sessionId: string): number {
+  getSessionInsightsTotal(sessionId: string, excludeSource?: string): number {
+    if (excludeSource) {
+      const row = this.db.prepare(
+        'SELECT COUNT(*) as count FROM insights WHERE session_id = ? AND source != ?'
+      ).get(sessionId, excludeSource) as { count: number }
+      return row.count
+    }
     const session = this.sessions.get(sessionId)
     return session ? session.insights.length : 0
   }

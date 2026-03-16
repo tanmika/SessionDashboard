@@ -1,8 +1,9 @@
 import { existsSync, openSync, readSync, closeSync, statSync } from 'fs'
 import { watch } from 'fs'
-import { extractInsightBlocks, extractSignificantText, contentHash } from '../utils/insight-extractor.js'
+import { extractInsightBlocks, contentHash, sanitizeUserInput } from '../utils/insight-extractor.js'
 
 type InsightCallback = (sessionId: string, content: string) => void
+type UserInputCallback = (sessionId: string, content: string) => void
 
 interface WatchState {
   sessionId: string
@@ -12,12 +13,16 @@ interface WatchState {
   watcher: ReturnType<typeof watch> | null
 }
 
+// User input filtering is in ../utils/insight-extractor.ts (sanitizeUserInput)
+
 export class TranscriptWatcher {
   private watchers = new Map<string, WatchState>()
   private onInsight: InsightCallback
+  private onUserInput: UserInputCallback
 
-  constructor(onInsight: InsightCallback) {
+  constructor(onInsight: InsightCallback, onUserInput: UserInputCallback) {
     this.onInsight = onInsight
+    this.onUserInput = onUserInput
   }
 
   // Register a transcript file to watch for a session
@@ -108,11 +113,33 @@ export class TranscriptWatcher {
   }
 
   private processRecord(state: WatchState, obj: any) {
-    // Handle both formats:
-    // - type: "assistant" with message.content (project dir format)
-    // - Direct assistant messages
     const recordType = obj.type
 
+    // Capture user input
+    if (recordType === 'user') {
+      const message = obj.message
+      if (!message) return
+      // user message content can be a string or array of content blocks
+      let text = ''
+      if (typeof message.content === 'string') {
+        text = message.content
+      } else if (Array.isArray(message.content)) {
+        text = message.content
+          .filter((b: any) => b.type === 'text')
+          .map((b: any) => b.text)
+          .join('\n')
+      }
+      const sanitized = sanitizeUserInput(text)
+      if (!sanitized) return
+      const hash = contentHash(sanitized)
+      if (!state.seenHashes.has(hash)) {
+        state.seenHashes.add(hash)
+        this.onUserInput(state.sessionId, sanitized)
+      }
+      return
+    }
+
+    // Extract insights from assistant messages
     if (recordType !== 'assistant') return
 
     const message = obj.message
@@ -130,26 +157,12 @@ export class TranscriptWatcher {
   }
 
   private extractAndEmit(state: WatchState, text: string) {
-    // Try insight blocks first
     const insightBlocks = extractInsightBlocks(text)
-
-    if (insightBlocks.length > 0) {
-      for (const block of insightBlocks) {
-        const hash = contentHash(block)
-        if (state.seenHashes.has(hash)) continue
-        state.seenHashes.add(hash)
-        this.onInsight(state.sessionId, block)
-      }
-      return
-    }
-
-    // Fallback: significant text paragraphs
-    const paragraphs = extractSignificantText(text)
-    for (const para of paragraphs) {
-      const hash = contentHash(para)
+    for (const block of insightBlocks) {
+      const hash = contentHash(block)
       if (state.seenHashes.has(hash)) continue
       state.seenHashes.add(hash)
-      this.onInsight(state.sessionId, para)
+      this.onInsight(state.sessionId, block)
     }
   }
 }

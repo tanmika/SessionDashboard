@@ -5,7 +5,7 @@ import type { SessionManager } from '../services/session-manager.js'
 export function createEventRoutes(sessionManager: SessionManager): Router {
   const router = Router()
 
-  // Receive hook events from Claude Code
+  // Receive hook events from Claude Code / Codex CLI
   router.post('/events', (req, res) => {
     const payload = req.body as HookEventPayload
 
@@ -19,7 +19,9 @@ export function createEventRoutes(sessionManager: SessionManager): Router {
       payload.timestamp = new Date().toISOString()
     }
 
-    const session = sessionManager.handleEvent(payload)
+    const session = payload.dashboard_source === 'codex'
+      ? sessionManager.handleCodexHookEvent(payload)
+      : sessionManager.handleEvent(payload)
     res.json({ ok: true, session_id: session.session_id, state: session.state })
   })
 
@@ -48,12 +50,13 @@ export function createEventRoutes(sessionManager: SessionManager): Router {
     res.json({ ok: true, data: events, total })
   })
 
-  // Get session insights (paginated)
+  // Get session insights (paginated, optional source filter)
   router.get('/sessions/:id/insights', (req, res) => {
     const limit = parseInt((req.query.limit as string) || '100', 10)
     const offset = parseInt((req.query.offset as string) || '0', 10)
-    const data = sessionManager.getSessionInsights(req.params.id, limit, offset)
-    const total = sessionManager.getSessionInsightsTotal(req.params.id)
+    const excludeSource = (req.query.exclude_source as string) || undefined
+    const data = sessionManager.getSessionInsights(req.params.id, limit, offset, excludeSource)
+    const total = sessionManager.getSessionInsightsTotal(req.params.id, excludeSource)
     res.json({ ok: true, data, total })
   })
 

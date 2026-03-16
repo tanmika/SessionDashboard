@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
-import { resolve } from 'path'
+import { getDbPath } from '../shared/config.js'
 
-const DB_PATH = resolve(import.meta.dirname, '..', 'data', 'dashboard.db')
+const DB_PATH = getDbPath()
 
 export function initDb(): Database.Database {
   const db = new Database(DB_PATH)

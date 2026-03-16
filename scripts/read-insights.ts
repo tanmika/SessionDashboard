@@ -10,9 +10,9 @@
  */
 
 import Database from 'better-sqlite3'
-import { resolve } from 'path'
+import { getDbPath } from '../shared/config.js'
 
-const DB_PATH = resolve(import.meta.dirname, '..', 'data', 'dashboard.db')
+const DB_PATH = getDbPath()
 
 // ─── Types ───
 
@@ -38,7 +38,7 @@ type SessionRow = {
   predecessor_id: string
 }
 
-type InsightRow = { content: string; timestamp: string }
+type InsightRow = { content: string; timestamp: string; source?: string }
 
 // ─── Help ───
 
@@ -238,7 +238,7 @@ function cmdInsights(db: Database.Database, targetSession: SessionRow, args: Arg
 
     const placeholders = sessionIds.map(() => '?').join(',')
     const allInsights = db.prepare(
-      `SELECT content, timestamp, session_id as source_session FROM insights
+      `SELECT content, timestamp, source, session_id as source_session FROM insights
        WHERE session_id IN (${placeholders})
        ORDER BY timestamp DESC`
     ).all(...sessionIds) as (InsightRow & { source_session: string })[]
@@ -258,7 +258,7 @@ function cmdInsights(db: Database.Database, targetSession: SessionRow, args: Arg
     // Normal mode: SQL limit+offset
     if (sessionIds.length === 1) {
       insights = db.prepare(
-        `SELECT content, timestamp FROM insights
+        `SELECT content, timestamp, source FROM insights
          WHERE session_id = ?
          ORDER BY timestamp DESC
          LIMIT ? OFFSET ?`
@@ -266,7 +266,7 @@ function cmdInsights(db: Database.Database, targetSession: SessionRow, args: Arg
     } else {
       const placeholders = sessionIds.map(() => '?').join(',')
       insights = db.prepare(
-        `SELECT content, timestamp, session_id as source_session FROM insights
+        `SELECT content, timestamp, source, session_id as source_session FROM insights
          WHERE session_id IN (${placeholders})
          ORDER BY timestamp DESC
          LIMIT ? OFFSET ?`
@@ -315,6 +315,7 @@ function outputInsights(
       ...(meta.isChain ? { chain_sessions: meta.sessionCount } : {}),
       insights: insights.map(ins => ({
         content: ins.content,
+        ...(ins.source ? { source: ins.source } : {}),
         ...(ins.source_session ? { session: ins.source_session.slice(0, 8) } : {}),
       })),
     }, null, 2))
@@ -334,11 +335,13 @@ function outputInsights(
     console.log('No insights found.')
   } else {
     for (const ins of insights) {
+      // Build separator with metadata tags
+      const tags: string[] = []
+      if (ins.source === 'user') tags.push('user')
       if (ins.source_session && ins.source_session !== session.session_id) {
-        console.log(`--- [${ins.source_session.slice(0, 8)}] ---`)
-      } else {
-        console.log('---')
+        tags.push(ins.source_session.slice(0, 8))
       }
+      console.log(tags.length > 0 ? `--- [${tags.join(' | ')}] ---` : '---')
       console.log(ins.content)
       console.log()
     }
@@ -361,7 +364,7 @@ function outputInsights(
 
 // ─── Main ───
 
-function main() {
+export function main() {
   const args = parseArgs()
 
   if (args.help) {
@@ -396,4 +399,9 @@ function main() {
   db.close()
 }
 
-main()
+// Direct execution support
+const isDirectRun = process.argv[1] && (
+  process.argv[1].endsWith('read-insights.ts') ||
+  process.argv[1].endsWith('read-insights.js')
+)
+if (isDirectRun) main()
