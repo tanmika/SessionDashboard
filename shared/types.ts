@@ -177,7 +177,7 @@ export interface SessionExportData {
 }
 
 export interface SessionExportFailure {
-  error: 'session_not_found' | 'ambiguous_session' | 'missing_transcript'
+  error: 'session_not_found' | 'ambiguous_session' | 'missing_transcript' | 'invalid_chain'
   message: string
   missing_sessions?: SessionExportMissingSession[]
   matching_sessions?: Array<{

@@ -238,6 +238,33 @@ function verifySessionExport(tempRoot: string) {
     assert(conversation.data.content.includes('child user'))
     assert(conversation.data.content.includes('child agent'))
 
+    const noisyTranscript = join(transcriptDir, 'noisy.jsonl')
+    writeFileSync(noisyTranscript, [
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-03-17T10:20:00.000Z',
+        message: { content: 'Implement the following plan:\n1. keep this' },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-03-17T10:20:01.000Z',
+        message: { content: [{ type: 'text', text: 'plan acknowledged' }] },
+      }),
+      '',
+    ].join('\n'))
+    insertSession(db, 'noisy-session', {
+      cwd: '/tmp/noisy',
+      transcriptPath: noisyTranscript,
+      source: 'claude',
+    })
+    const noisyConversation = exportSessionText(db, {
+      sessionId: 'noisy-session',
+      mode: 'conversation',
+      depth: 0,
+    })
+    assert(noisyConversation.ok)
+    assert(noisyConversation.data.content.includes('Implement the following plan:'))
+
     const insightFallback = exportSessionText(db, {
       sessionId: 'child-session',
       mode: 'insights',
@@ -262,6 +289,42 @@ function verifySessionExport(tempRoot: string) {
     assert(!missingConversation.ok)
     assert.equal(missingConversation.error.error, 'missing_transcript')
     assert.equal(missingConversation.error.missing_sessions?.length, 1)
+
+    const unreadableTranscript = join(transcriptDir, 'unreadable')
+    mkdirSync(unreadableTranscript, { recursive: true })
+    insertSession(db, 'unreadable-session', {
+      cwd: '/tmp/unreadable',
+      transcriptPath: unreadableTranscript,
+      source: 'claude',
+    })
+    const unreadableConversation = exportSessionText(db, {
+      sessionId: 'unreadable-session',
+      mode: 'conversation',
+      depth: 0,
+    })
+    assert(!unreadableConversation.ok)
+    assert.equal(unreadableConversation.error.error, 'missing_transcript')
+    assert.equal(unreadableConversation.error.missing_sessions?.[0]?.reason, 'Transcript file could not be read.')
+
+    insertSession(db, 'loop-a', {
+      cwd: '/tmp/loop-a',
+      transcriptPath: childTranscript,
+      source: 'claude',
+    })
+    insertSession(db, 'loop-b', {
+      cwd: '/tmp/loop-b',
+      transcriptPath: childTranscript,
+      source: 'claude',
+      predecessorId: 'loop-a',
+    })
+    db.prepare('UPDATE sessions SET predecessor_id = ? WHERE session_id = ?').run('loop-b', 'loop-a')
+    const loopConversation = exportSessionText(db, {
+      sessionId: 'loop-a',
+      mode: 'conversation',
+      depth: 'all',
+    })
+    assert(!loopConversation.ok)
+    assert.equal(loopConversation.error.error, 'invalid_chain')
   } finally {
     db.close()
   }

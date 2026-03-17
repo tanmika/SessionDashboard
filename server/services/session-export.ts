@@ -8,7 +8,6 @@ import type {
   SessionExportMissingSession,
   SessionExportMode,
 } from '../../shared/types.js'
-import { isUserInputNoise } from '../utils/insight-extractor.js'
 
 interface SessionRow {
   session_id: string
@@ -35,6 +34,10 @@ interface ExportSession {
 type ExportResult =
   | { ok: true; data: SessionExportData }
   | { ok: false; error: SessionExportFailure }
+
+type ReadableTranscriptResult =
+  | { ok: true; content: string }
+  | { ok: false; missing: SessionExportMissingSession }
 
 export interface ExportOptions {
   sessionId: string
@@ -99,18 +102,26 @@ function resolveSessionChain(
   db: Database.Database,
   start: ExportSession,
   depth: SessionExportDepth
-): ExportSession[] {
+): ExportSession[] | SessionExportFailure {
   const chain = [start]
   let current = start
   let remaining = depth === 'all' ? Number.POSITIVE_INFINITY : depth
+  const visited = new Set([start.session_id])
 
   while (remaining > 0 && current.predecessor_id) {
+    if (visited.has(current.predecessor_id)) {
+      return {
+        error: 'invalid_chain',
+        message: `Detected a predecessor cycle while exporting session "${start.session_id}".`,
+      }
+    }
     const row = db.prepare(
       `SELECT session_id, cwd, transcript_path, state, last_activity, created_at, alias, pinned, source, predecessor_id
        FROM sessions WHERE session_id = ?`
     ).get(current.predecessor_id) as SessionRow | undefined
     if (!row) break
     current = normalizeSession(row)
+    visited.add(current.session_id)
     chain.push(current)
     if (depth !== 'all') remaining -= 1
   }
@@ -130,8 +141,60 @@ function extractClaudeText(content: unknown): string {
   return text.trim()
 }
 
-function parseClaudeConversation(session: ExportSession): SessionExportMessage[] {
-  const raw = readFileSync(session.transcript_path, 'utf-8')
+function isConversationControlText(text: string): boolean {
+  const trimmed = text.trim()
+  return (
+    trimmed === '[Request interrupted by user]' ||
+    trimmed.startsWith('<command-name>') ||
+    trimmed.startsWith('<local-command-caveat>')
+  )
+}
+
+function readTranscript(session: ExportSession): ReadableTranscriptResult {
+  if (!session.transcript_path) {
+    return {
+      ok: false,
+      missing: {
+        session_id: session.session_id,
+        display_name: session.display_name,
+        source: session.source,
+        transcript_path: session.transcript_path,
+        reason: 'No transcript path recorded.',
+      },
+    }
+  }
+  if (!existsSync(session.transcript_path)) {
+    return {
+      ok: false,
+      missing: {
+        session_id: session.session_id,
+        display_name: session.display_name,
+        source: session.source,
+        transcript_path: session.transcript_path,
+        reason: 'Transcript file does not exist.',
+      },
+    }
+  }
+  try {
+    return {
+      ok: true,
+      content: readFileSync(session.transcript_path, 'utf-8'),
+    }
+  } catch {
+    return {
+      ok: false,
+      missing: {
+        session_id: session.session_id,
+        display_name: session.display_name,
+        source: session.source,
+        transcript_path: session.transcript_path,
+        reason: 'Transcript file could not be read.',
+      },
+    }
+  }
+}
+
+function parseClaudeConversation(session: ExportSession, raw: string): SessionExportMessage[] {
   const messages: SessionExportMessage[] = []
 
   for (const line of raw.split('\n')) {
@@ -148,7 +211,7 @@ function parseClaudeConversation(session: ExportSession): SessionExportMessage[]
     if (record.type === 'user') {
       if (record.isMeta) continue
       const text = extractClaudeText(record.message?.content)
-      if (!text || isUserInputNoise(text)) continue
+      if (!text || isConversationControlText(text)) continue
       messages.push({
         session_id: session.session_id,
         timestamp: record.timestamp || session.created_at,
@@ -176,8 +239,7 @@ function parseClaudeConversation(session: ExportSession): SessionExportMessage[]
   ))
 }
 
-function parseCodexConversation(session: ExportSession): SessionExportMessage[] {
-  const raw = readFileSync(session.transcript_path, 'utf-8')
+function parseCodexConversation(session: ExportSession, raw: string): SessionExportMessage[] {
   const messages: SessionExportMessage[] = []
   const pushAgentMessage = (timestamp: string, text: string) => {
     const trimmed = text.trim()
@@ -214,7 +276,7 @@ function parseCodexConversation(session: ExportSession): SessionExportMessage[] 
 
     if (record.payload.type === 'user_message') {
       const text = String(record.payload.message || '').trim()
-      if (!text || isUserInputNoise(text)) continue
+      if (!text || isConversationControlText(text)) continue
       messages.push({
         session_id: session.session_id,
         timestamp: record.timestamp || session.created_at,
@@ -244,30 +306,6 @@ function parseCodexConversation(session: ExportSession): SessionExportMessage[] 
     a.timestamp.localeCompare(b.timestamp) ||
     (a.role === b.role ? 0 : a.role === 'user' ? -1 : 1)
   ))
-}
-
-function collectMissingSessions(sessions: ExportSession[]): SessionExportMissingSession[] {
-  return sessions.flatMap((session) => {
-    if (!session.transcript_path) {
-      return [{
-        session_id: session.session_id,
-        display_name: session.display_name,
-        source: session.source,
-        transcript_path: session.transcript_path,
-        reason: 'No transcript path recorded.',
-      }]
-    }
-    if (!existsSync(session.transcript_path)) {
-      return [{
-        session_id: session.session_id,
-        display_name: session.display_name,
-        source: session.source,
-        transcript_path: session.transcript_path,
-        reason: 'Transcript file does not exist.',
-      }]
-    }
-    return []
-  })
 }
 
 function formatConversationExport(sessions: ExportSession[], messages: SessionExportMessage[]): string {
@@ -369,25 +407,30 @@ export function exportSessionText(db: Database.Database, options: ExportOptions)
   }
 
   const chain = resolveSessionChain(db, resolved, depth)
+  if ('error' in chain) {
+    return { ok: false, error: chain }
+  }
 
   if (mode === 'conversation') {
-    const missing = collectMissingSessions(chain)
-    if (missing.length > 0) {
-      return {
-        ok: false,
-        error: {
-          error: 'missing_transcript',
-          message: 'One or more sessions in the selected chain do not have readable transcript files.',
-          missing_sessions: missing,
-        },
+    const messages: SessionExportMessage[] = []
+    for (const session of chain) {
+      const transcript = readTranscript(session)
+      if (!transcript.ok) {
+        return {
+          ok: false,
+          error: {
+            error: 'missing_transcript',
+            message: 'One or more sessions in the selected chain do not have readable transcript files.',
+            missing_sessions: [transcript.missing],
+          },
+        }
       }
+      messages.push(...(
+        session.source === 'claude'
+          ? parseClaudeConversation(session, transcript.content)
+          : parseCodexConversation(session, transcript.content)
+      ))
     }
-
-    const messages = chain.flatMap((session) => (
-      session.source === 'claude'
-        ? parseClaudeConversation(session)
-        : parseCodexConversation(session)
-    ))
 
     return {
       ok: true,
