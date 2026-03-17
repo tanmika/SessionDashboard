@@ -25,10 +25,17 @@ export class TranscriptWatcher {
     this.onUserInput = onUserInput
   }
 
-  // Register a transcript file to watch for a session
-  watch(sessionId: string, transcriptPath: string) {
+  // Register a transcript file to watch for a session.
+  // If the file doesn't exist yet, retries a few times (Claude may create it after hook fires).
+  watch(sessionId: string, transcriptPath: string, retries = 3) {
     if (!transcriptPath || this.watchers.has(sessionId)) return
-    if (!existsSync(transcriptPath)) return
+
+    if (!existsSync(transcriptPath)) {
+      if (retries > 0) {
+        setTimeout(() => this.watch(sessionId, transcriptPath, retries - 1), 1000)
+      }
+      return
+    }
 
     const state: WatchState = {
       sessionId,
@@ -58,6 +65,8 @@ export class TranscriptWatcher {
     const existing = this.watchers.get(sessionId)
     if (existing) {
       if (existing.path === transcriptPath) return
+      // Verify new path exists before closing old watcher
+      if (!existsSync(transcriptPath)) return
       existing.watcher?.close()
       this.watchers.delete(sessionId)
     }

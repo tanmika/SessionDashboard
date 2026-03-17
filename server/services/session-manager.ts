@@ -283,8 +283,8 @@ export class SessionManager {
     if (payload.transcript_path) {
       const prevPath = session.transcript_path
       session.transcript_path = payload.transcript_path
-      // Start/update transcript watching when path changes
-      if (prevPath !== payload.transcript_path) {
+      // Start transcript watching for new sessions, or update if path changed
+      if (isNew || prevPath !== payload.transcript_path) {
         this.transcriptWatcher.updatePath(sid, payload.transcript_path)
       }
     }
