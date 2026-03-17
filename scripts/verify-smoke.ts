@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { applySchema } from '../server/db.js'
 import { SessionManager } from '../server/services/session-manager.js'
+import { exportSessionText } from '../server/services/session-export.js'
 import { TranscriptWatcher } from '../server/services/transcript-watcher.js'
 
 const repoRoot = resolve(import.meta.dirname, '..')
@@ -76,6 +77,7 @@ function verifyPackageManifest(tempRoot: string) {
     'scripts/read-insights.js',
     'scripts/setup-hooks.js',
     'scripts/setup-codex.js',
+    'scripts/export-session.js',
   ]
   for (const file of requiredPaths) {
     assert(packedPaths.has(file), `npm pack manifest is missing ${file}`)
@@ -87,6 +89,47 @@ function verifyBuiltCli() {
   const stdout = runCommand('node', ['lib/cli.js', 'insights', '--list'])
   assert(stdout.includes('SESSION_ID'), 'built CLI insights --list output is missing table header')
   console.log('verify: built CLI')
+}
+
+function insertSession(
+  db: Database.Database,
+  sessionId: string,
+  options: {
+    cwd: string
+    transcriptPath: string
+    source: 'claude' | 'codex'
+    predecessorId?: string
+  }
+) {
+  const now = new Date().toISOString()
+  db.prepare(`
+    INSERT INTO sessions (
+      session_id, cwd, transcript_path, state, last_activity, created_at, pinned, alias, source, predecessor_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    sessionId,
+    options.cwd,
+    options.transcriptPath,
+    'active',
+    now,
+    now,
+    0,
+    '',
+    options.source,
+    options.predecessorId || ''
+  )
+}
+
+function insertInsight(
+  db: Database.Database,
+  sessionId: string,
+  content: string,
+  source: 'transcript' | 'hook' | 'user',
+  timestamp: string
+) {
+  db.prepare(
+    'INSERT INTO insights (session_id, content, timestamp, source) VALUES (?, ?, ?, ?)'
+  ).run(sessionId, content, timestamp, source)
 }
 
 function verifyCodexHook() {
@@ -135,6 +178,96 @@ function verifySessionRestore(tempRoot: string) {
   console.log('verify: SessionManager restore cap')
 }
 
+function verifySessionExport(tempRoot: string) {
+  const tempHome = join(tempRoot, 'export-home')
+  const dataDir = join(tempHome, 'data')
+  const transcriptDir = join(tempRoot, 'export-transcripts')
+  mkdirSync(dataDir, { recursive: true })
+  mkdirSync(transcriptDir, { recursive: true })
+
+  const dbPath = join(dataDir, 'dashboard.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+
+  const parentTranscript = join(transcriptDir, 'parent.jsonl')
+  const childTranscript = join(transcriptDir, 'child.jsonl')
+  writeFileSync(parentTranscript, [
+    JSON.stringify({ type: 'user', timestamp: '2026-03-17T10:00:00.000Z', message: { content: 'parent user' } }),
+    JSON.stringify({ type: 'assistant', timestamp: '2026-03-17T10:00:01.000Z', message: { content: [{ type: 'text', text: 'parent agent' }] } }),
+    '',
+  ].join('\n'))
+  writeFileSync(childTranscript, [
+    JSON.stringify({
+      timestamp: '2026-03-17T10:10:00.000Z',
+      type: 'event_msg',
+      payload: { type: 'user_message', message: 'child user' },
+    }),
+    JSON.stringify({
+      timestamp: '2026-03-17T10:10:01.000Z',
+      type: 'event_msg',
+      payload: { type: 'task_complete', last_agent_message: 'child agent' },
+    }),
+    '',
+  ].join('\n'))
+
+  insertSession(db, 'parent-session', {
+    cwd: '/tmp/parent',
+    transcriptPath: parentTranscript,
+    source: 'claude',
+  })
+  insertSession(db, 'child-session', {
+    cwd: '/tmp/child',
+    transcriptPath: childTranscript,
+    source: 'codex',
+    predecessorId: 'parent-session',
+  })
+  insertInsight(db, 'parent-session', 'parent insight', 'transcript', '2026-03-17T10:00:02.000Z')
+  insertInsight(db, 'child-session', 'child prompt', 'user', '2026-03-17T10:10:00.000Z')
+  insertInsight(db, 'child-session', 'child insight', 'transcript', '2026-03-17T10:10:02.000Z')
+
+  try {
+    const conversation = exportSessionText(db, {
+      sessionId: 'child-session',
+      mode: 'conversation',
+      depth: 1,
+    })
+    assert(conversation.ok)
+    assert.equal(conversation.data.session_count, 2)
+    assert(conversation.data.content.includes('parent user'))
+    assert(conversation.data.content.includes('parent agent'))
+    assert(conversation.data.content.includes('child user'))
+    assert(conversation.data.content.includes('child agent'))
+
+    const insightFallback = exportSessionText(db, {
+      sessionId: 'child-session',
+      mode: 'insights',
+      depth: 'all',
+    })
+    assert(insightFallback.ok)
+    assert(insightFallback.data.content.includes('parent insight'))
+    assert(insightFallback.data.content.includes('child insight'))
+
+    const cliOutput = runCommand('node', ['lib/cli.js', 'export', '--session', 'child-session', '--depth', '1'], {
+      env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome },
+    })
+    assert(cliOutput.includes('parent user'))
+    assert(cliOutput.includes('child agent'))
+
+    rmSync(parentTranscript, { force: true })
+    const missingConversation = exportSessionText(db, {
+      sessionId: 'child-session',
+      mode: 'conversation',
+      depth: 1,
+    })
+    assert(!missingConversation.ok)
+    assert.equal(missingConversation.error.error, 'missing_transcript')
+    assert.equal(missingConversation.error.missing_sessions?.length, 1)
+  } finally {
+    db.close()
+  }
+  console.log('verify: session export conversation and fallback')
+}
+
 async function verifyTranscriptRebind(tempRoot: string) {
   const transcriptDir = join(tempRoot, 'transcripts')
   mkdirSync(transcriptDir, { recursive: true })
@@ -178,6 +311,7 @@ async function main() {
     verifyBuiltCli()
     verifyCodexHook()
     verifySessionRestore(tempRoot)
+    verifySessionExport(tempRoot)
     await verifyTranscriptRebind(tempRoot)
     console.log('verify: smoke checks passed')
   } finally {
