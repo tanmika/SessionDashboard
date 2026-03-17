@@ -148,6 +148,45 @@ export interface ApiResponse<T> {
   error?: string
 }
 
+// ─── Export ───
+
+export type SessionExportMode = 'conversation' | 'insights'
+export type SessionExportDepth = number | 'all'
+
+export interface SessionExportMessage {
+  session_id: string
+  timestamp: string
+  role: 'user' | 'agent'
+  text: string
+}
+
+export interface SessionExportMissingSession {
+  session_id: string
+  display_name: string
+  source: 'claude' | 'codex'
+  transcript_path?: string
+  reason: string
+}
+
+export interface SessionExportData {
+  mode: SessionExportMode
+  depth: SessionExportDepth
+  content: string
+  filename: string
+  session_count: number
+}
+
+export interface SessionExportFailure {
+  error: 'session_not_found' | 'ambiguous_session' | 'missing_transcript'
+  message: string
+  missing_sessions?: SessionExportMissingSession[]
+  matching_sessions?: Array<{
+    session_id: string
+    display_name: string
+    source: 'claude' | 'codex'
+  }>
+}
+
 // ─── Constants ───
 
 export const IDLE_THRESHOLD_MS = 3 * 60 * 1000 // 3 minutes

@@ -37,6 +37,7 @@ Commands:
   stop        Stop the running server
   status      Show server running status
   insights    Read insights from the database (offline CLI)
+  export      Export session conversation or insight history to txt
   open        Open the web UI in your default browser
   serve       Run the server in the foreground (for debugging)
 
@@ -250,6 +251,11 @@ async function cmdInsights() {
   main(process.argv.slice(3))
 }
 
+async function cmdExport() {
+  const { main } = await import('../scripts/export-session.js')
+  main(process.argv.slice(3))
+}
+
 function cmdOpen() {
   const port = getPort()
   const url = `http://localhost:${port}`
@@ -296,6 +302,9 @@ switch (command) {
     break
   case 'insights':
     await cmdInsights()
+    break
+  case 'export':
+    await cmdExport()
     break
   case 'open':
     cmdOpen()
