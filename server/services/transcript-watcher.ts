@@ -17,6 +17,7 @@ interface WatchState {
 
 export class TranscriptWatcher {
   private watchers = new Map<string, WatchState>()
+  private pendingRebinds = new Map<string, ReturnType<typeof setTimeout>>()
   private onInsight: InsightCallback
   private onUserInput: UserInputCallback
 
@@ -63,10 +64,18 @@ export class TranscriptWatcher {
   // Update transcript path (called when a hook event provides a new path)
   updatePath(sessionId: string, transcriptPath: string) {
     const existing = this.watchers.get(sessionId)
+    if (existing?.path === transcriptPath) {
+      this.clearPendingRebind(sessionId)
+      return
+    }
+
+    if (existing && !existsSync(transcriptPath)) {
+      this.scheduleRebind(sessionId, transcriptPath)
+      return
+    }
+
+    this.clearPendingRebind(sessionId)
     if (existing) {
-      if (existing.path === transcriptPath) return
-      // Verify new path exists before closing old watcher
-      if (!existsSync(transcriptPath)) return
       existing.watcher?.close()
       this.watchers.delete(sessionId)
     }
@@ -74,6 +83,7 @@ export class TranscriptWatcher {
   }
 
   unwatch(sessionId: string) {
+    this.clearPendingRebind(sessionId)
     const state = this.watchers.get(sessionId)
     if (state) {
       state.watcher?.close()
@@ -82,10 +92,31 @@ export class TranscriptWatcher {
   }
 
   unwatchAll() {
+    for (const timer of this.pendingRebinds.values()) {
+      clearTimeout(timer)
+    }
+    this.pendingRebinds.clear()
     for (const state of this.watchers.values()) {
       state.watcher?.close()
     }
     this.watchers.clear()
+  }
+
+  private clearPendingRebind(sessionId: string) {
+    const timer = this.pendingRebinds.get(sessionId)
+    if (timer) {
+      clearTimeout(timer)
+      this.pendingRebinds.delete(sessionId)
+    }
+  }
+
+  private scheduleRebind(sessionId: string, transcriptPath: string) {
+    this.clearPendingRebind(sessionId)
+    const timer = setTimeout(() => {
+      this.pendingRebinds.delete(sessionId)
+      this.updatePath(sessionId, transcriptPath)
+    }, 1000)
+    this.pendingRebinds.set(sessionId, timer)
   }
 
   private parseIncremental(state: WatchState) {
@@ -96,11 +127,21 @@ export class TranscriptWatcher {
       const bytesToRead = stat.size - state.offset
       const buf = Buffer.alloc(bytesToRead)
       const fd = openSync(state.path, 'r')
-      const bytesRead = readSync(fd, buf, 0, bytesToRead, state.offset)
-      closeSync(fd)
+      let bytesRead = 0
+      try {
+        bytesRead = readSync(fd, buf, 0, bytesToRead, state.offset)
+      } finally {
+        closeSync(fd)
+      }
 
-      state.offset += bytesRead
-      const newContent = buf.subarray(0, bytesRead).toString('utf-8')
+      if (bytesRead <= 0) return
+
+      const chunk = buf.subarray(0, bytesRead)
+      const lastNewline = chunk.lastIndexOf(0x0a) // '\n'
+      if (lastNewline === -1) return
+
+      state.offset += lastNewline + 1
+      const newContent = chunk.subarray(0, lastNewline + 1).toString('utf-8')
 
       // Process line by line (handle partial last line)
       const lines = newContent.split('\n')
@@ -143,6 +184,9 @@ export class TranscriptWatcher {
       const hash = contentHash(sanitized)
       if (!state.seenHashes.has(hash)) {
         state.seenHashes.add(hash)
+        if (state.seenHashes.size > 5000) {
+          state.seenHashes.clear()
+        }
         this.onUserInput(state.sessionId, sanitized)
       }
       return
@@ -171,6 +215,9 @@ export class TranscriptWatcher {
       const hash = contentHash(block)
       if (state.seenHashes.has(hash)) continue
       state.seenHashes.add(hash)
+      if (state.seenHashes.size > 5000) {
+        state.seenHashes.clear()
+      }
       this.onInsight(state.sessionId, block)
     }
   }

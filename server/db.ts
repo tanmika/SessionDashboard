@@ -3,12 +3,7 @@ import { getDbPath } from '../shared/config.js'
 
 const DB_PATH = getDbPath()
 
-export function initDb(): Database.Database {
-  const db = new Database(DB_PATH)
-
-  // Enable WAL mode for better concurrent read/write
-  db.pragma('journal_mode = WAL')
-
+export function applySchema(db: Database.Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       session_id TEXT PRIMARY KEY,
@@ -51,6 +46,15 @@ export function initDb(): Database.Database {
   try { db.exec(`ALTER TABLE sessions ADD COLUMN alias TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'`) } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE sessions ADD COLUMN predecessor_id TEXT DEFAULT ''`) } catch { /* already exists */ }
+}
+
+export function initDb(): Database.Database {
+  const db = new Database(DB_PATH)
+
+  // Enable WAL mode for better concurrent read/write
+  db.pragma('journal_mode = WAL')
+
+  applySchema(db)
 
   return db
 }

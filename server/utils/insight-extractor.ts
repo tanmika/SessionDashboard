@@ -51,7 +51,10 @@ const USER_INPUT_NOISE_PATTERNS = [
 /** Patterns for sensitive credentials that should be redacted */
 const CREDENTIAL_PATTERNS = [
   /(github_pat_|ghp_|gho_|ghs_)[A-Za-z0-9_]+/g,
-  /sk-[a-f0-9]{20,}/g,
+  /\bsk-[A-Za-z0-9_-]{20,}\b/g,          // OpenAI-style secret keys
+  /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g,      // Anthropic API keys
+  /\b(?:proj|sess)-[A-Za-z0-9]{24,}\b/g, // OpenAI project/session-like IDs
+  /\bBearer\s+[A-Za-z0-9._-]{24,}\b/gi,  // Bearer tokens (safely length-gated)
 ]
 
 export function isUserInputNoise(text: string): boolean {

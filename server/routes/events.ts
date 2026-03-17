@@ -2,6 +2,19 @@ import { Router } from 'express'
 import type { HookEventPayload } from '../../shared/types.js'
 import type { SessionManager } from '../services/session-manager.js'
 
+function parseBoundedInt(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const raw = Array.isArray(value) ? value[0] : value
+  if (raw == null) return fallback
+  const parsed = Number.parseInt(String(raw), 10)
+  if (Number.isNaN(parsed)) return fallback
+  return Math.min(Math.max(parsed, min), max)
+}
+
 export function createEventRoutes(sessionManager: SessionManager): Router {
   const router = Router()
 
@@ -43,8 +56,8 @@ export function createEventRoutes(sessionManager: SessionManager): Router {
 
   // Get session event timeline (supports pagination via ?limit=N&offset=N)
   router.get('/sessions/:id/events', (req, res) => {
-    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined
-    const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0
+    const limit = parseBoundedInt(req.query.limit, 100, 1, 500)
+    const offset = parseBoundedInt(req.query.offset, 0, 0, Number.MAX_SAFE_INTEGER)
     const events = sessionManager.getSessionEvents(req.params.id, limit, offset)
     const total = sessionManager.getSessionEventsCount(req.params.id)
     res.json({ ok: true, data: events, total })
@@ -52,8 +65,8 @@ export function createEventRoutes(sessionManager: SessionManager): Router {
 
   // Get session insights (paginated, optional source filter)
   router.get('/sessions/:id/insights', (req, res) => {
-    const limit = parseInt((req.query.limit as string) || '100', 10)
-    const offset = parseInt((req.query.offset as string) || '0', 10)
+    const limit = parseBoundedInt(req.query.limit, 100, 0, 500)
+    const offset = parseBoundedInt(req.query.offset, 0, 0, Number.MAX_SAFE_INTEGER)
     const excludeSource = (req.query.exclude_source as string) || undefined
     const data = sessionManager.getSessionInsights(req.params.id, limit, offset, excludeSource)
     const total = sessionManager.getSessionInsightsTotal(req.params.id, excludeSource)

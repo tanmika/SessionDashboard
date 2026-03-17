@@ -45,7 +45,7 @@ else
 fi
 
 if [ "$HOOK_EVENT_NAME" = "SessionStart" ] && [ -n "$SESSION_ID" ]; then
-  printf '{"hookSpecificOutput":{"additionalContext":"Your current session_id is: %s"}}\n' "$SESSION_ID"
+  printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Your current session_id is: %s"}}\n' "$SESSION_ID"
 fi
 
 exit 0

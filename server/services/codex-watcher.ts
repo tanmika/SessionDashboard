@@ -178,11 +178,21 @@ export class CodexWatcher {
       const bytesToRead = stat.size - state.offset
       const buf = Buffer.alloc(bytesToRead)
       const fd = openSync(state.path, 'r')
-      const bytesRead = readSync(fd, buf, 0, bytesToRead, state.offset)
-      closeSync(fd)
+      let bytesRead = 0
+      try {
+        bytesRead = readSync(fd, buf, 0, bytesToRead, state.offset)
+      } finally {
+        closeSync(fd)
+      }
 
-      state.offset += bytesRead
-      const newContent = buf.subarray(0, bytesRead).toString('utf-8')
+      if (bytesRead <= 0) return
+
+      const chunk = buf.subarray(0, bytesRead)
+      const lastNewline = chunk.lastIndexOf(0x0a) // '\n'
+      if (lastNewline === -1) return
+
+      state.offset += lastNewline + 1
+      const newContent = chunk.subarray(0, lastNewline + 1).toString('utf-8')
       const lines = newContent.split('\n')
 
       for (const line of lines) {
@@ -235,6 +245,9 @@ export class CodexWatcher {
             const hash = contentHash(sanitized)
             if (!state.seenHashes.has(hash)) {
               state.seenHashes.add(hash)
+              if (state.seenHashes.size > 5000) {
+                state.seenHashes.clear()
+              }
               this.callbacks.onUserInput(state.sessionId, sanitized)
             }
           }
@@ -270,6 +283,9 @@ export class CodexWatcher {
       const hash = contentHash(block)
       if (state.seenHashes.has(hash)) continue
       state.seenHashes.add(hash)
+      if (state.seenHashes.size > 5000) {
+        state.seenHashes.clear()
+      }
       this.callbacks.onInsight(state.sessionId, block)
     }
   }

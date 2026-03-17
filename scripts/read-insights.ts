@@ -49,10 +49,11 @@ type InsightRow = {
 const HELP = `
 Session Dashboard — Insight Recovery CLI
 
-Usage: npx tsx scripts/read-insights.ts --session <id> [options]
+Usage: npx tsx scripts/read-insights.ts [--session <id>] [options]
 
-Required:
+Session selection:
   --session <id>     Session ID (supports prefix match, e.g. "a1b2")
+                    Optional when used with --list (lists recent sessions)
 
 Options:
   --limit <n>        Max primary insights to return (default: 50)
@@ -64,6 +65,9 @@ Options:
   --help             Show this help
 
 Examples:
+  # List recent sessions
+  npx tsx scripts/read-insights.ts --list
+
   # List sessions matching a prefix
   npx tsx scripts/read-insights.ts --session a1b2 --list
 
@@ -80,8 +84,8 @@ Examples:
   npx tsx scripts/read-insights.ts --session a1b2 --limit 30 --offset 30
 `.trim()
 
-function parseArgs(): Args {
-  const argv = process.argv.slice(2)
+function parseArgs(argvInput?: string[]): Args {
+  const argv = argvInput ?? process.argv.slice(2)
   const args: Args = {
     help: false,
     limit: 50,
@@ -165,6 +169,15 @@ function findSessions(db: Database.Database, sessionPrefix: string): SessionRow[
      WHERE session_id = ? OR session_id LIKE ?
      ORDER BY last_activity DESC`
   ).all(sessionPrefix, `${sessionPrefix}%`) as SessionRow[]
+}
+
+function listRecentSessions(db: Database.Database, limit: number): SessionRow[] {
+  return db.prepare(
+    `SELECT session_id, cwd, state, alias, source, last_activity, created_at, predecessor_id
+     FROM sessions
+     ORDER BY last_activity DESC
+     LIMIT ?`
+  ).all(limit) as SessionRow[]
 }
 
 function getChain(db: Database.Database, startSessionId: string): string[] {
@@ -420,20 +433,28 @@ function outputInsights(
   console.log(`[${parts.join(' | ')}]`)
 }
 
-export function main() {
-  const args = parseArgs()
+export function main(argvInput?: string[]) {
+  const args = parseArgs(argvInput)
 
   if (args.help) {
     console.log(HELP)
     process.exit(0)
   }
 
+  const db = openDb()
+
+  if (!args.session && args.list) {
+    cmdList(db, listRecentSessions(db, args.limit), args)
+    db.close()
+    return
+  }
+
   if (!args.session) {
-    console.error('Error: --session <id> is required. Use --help for usage.')
+    console.error('Error: --session <id> is required unless --list is used. Use --help for usage.')
+    db.close()
     process.exit(1)
   }
 
-  const db = openDb()
   const sessions = findSessions(db, args.session)
 
   if (sessions.length === 0) {

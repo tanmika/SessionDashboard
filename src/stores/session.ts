@@ -1,14 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { Session, WsMessage, SessionState } from '../../shared/types'
+import type { Session, WsMessage } from '../../shared/types'
 import { SORT_PRIORITY } from '../../shared/types'
 import { usePreferencesStore } from './preferences'
 
 export const useSessionStore = defineStore('session', () => {
   const sessions = ref<Map<string, Session>>(new Map())
   const selectedSessionId = ref<string | null>(null)
-  const filterState = ref<SessionState | 'all' | 'needs_attention'>('all')
-  const searchQuery = ref('')
   const wsConnected = ref(false)
 
   let ws: WebSocket | null = null
@@ -24,24 +22,6 @@ export const useSessionStore = defineStore('session', () => {
     // Only show pinned sessions on the board
     let list = Array.from(sessions.value.values()).filter((s) => s.pinned === true)
 
-    // Filter by state
-    if (filterState.value === 'needs_attention') {
-      list = list.filter((s) => s.state === 'waiting_permission' || s.state === 'waiting_user')
-    } else if (filterState.value !== 'all') {
-      list = list.filter((s) => s.state === filterState.value)
-    }
-
-    // Filter by search
-    if (searchQuery.value) {
-      const q = searchQuery.value.toLowerCase()
-      list = list.filter(
-        (s) =>
-          s.display_name.toLowerCase().includes(q) ||
-          s.cwd.toLowerCase().includes(q) ||
-          s.session_id.toLowerCase().includes(q)
-      )
-    }
-
     // If a session is selected, maintain the frozen column order to prevent
     // visual re-sorting while user is reading the detail panel (PRD §10.9)
     if (frozenOrder.value) {
@@ -55,25 +35,14 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     // Default: sort by state priority first, then last_activity desc
+    const activityTs = new Map(list.map((s) => [s.session_id, Date.parse(s.last_activity)]))
     list.sort((a, b) => {
       const pa = SORT_PRIORITY[a.state]
       const pb = SORT_PRIORITY[b.state]
       if (pa !== pb) return pa - pb
-      return new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
+      return (activityTs.get(b.session_id) as number) - (activityTs.get(a.session_id) as number)
     })
 
-    return list
-  })
-
-  // All sessions sorted for SessionPicker (no pinned filter)
-  const allSortedSessions = computed(() => {
-    const list = Array.from(sessions.value.values())
-    list.sort((a, b) => {
-      const pa = SORT_PRIORITY[a.state]
-      const pb = SORT_PRIORITY[b.state]
-      if (pa !== pb) return pa - pb
-      return new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
-    })
     return list
   })
 
@@ -125,7 +94,7 @@ export const useSessionStore = defineStore('session', () => {
     if (s.state !== 'ended') return false
     const { archiveDays } = usePreferencesStore()
     const cutoff = Date.now() - archiveDays * 24 * 60 * 60 * 1000
-    return new Date(s.last_activity).getTime() < cutoff
+    return Date.parse(s.last_activity) < cutoff
   }
 
   // Short session: insights and user messages both <= 2
@@ -162,12 +131,13 @@ export const useSessionStore = defineStore('session', () => {
     const absPaths = [...byCwd.keys()].filter(p => p.startsWith('/'))
     let lcp = ''
     if (absPaths.length > 0) {
-      const segs0 = absPaths[0].split('/')
+      const splitAbsPaths = absPaths.map((p) => p.split('/'))
+      const segs0 = splitAbsPaths[0]
       let depth = 0
       outer:
       for (let i = 0; i < segs0.length; i++) {
-        for (const p of absPaths) {
-          if (p.split('/')[i] !== segs0[i]) break outer
+        for (const segs of splitAbsPaths) {
+          if (segs[i] !== segs0[i]) break outer
         }
         depth = i + 1
       }
@@ -195,10 +165,11 @@ export const useSessionStore = defineStore('session', () => {
         node = child
       }
       // Sort sessions: SORT_PRIORITY then last_activity desc
+      const activityTs = new Map(cwdSessions.map((s) => [s.session_id, Date.parse(s.last_activity)]))
       cwdSessions.sort((a, b) => {
         const pa = SORT_PRIORITY[a.state], pb = SORT_PRIORITY[b.state]
         if (pa !== pb) return pa - pb
-        return new Date(b.last_activity).getTime() - new Date(a.last_activity).getTime()
+        return (activityTs.get(b.session_id) as number) - (activityTs.get(a.session_id) as number)
       })
       node.sessions = cwdSessions
     }
@@ -288,8 +259,12 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     ws.onmessage = (event) => {
-      const msg: WsMessage = JSON.parse(event.data)
-      handleMessage(msg)
+      try {
+        const msg: WsMessage = JSON.parse(event.data)
+        handleMessage(msg)
+      } catch {
+        console.warn('[session-dashboard] invalid WS message:', event.data?.slice?.(0, 100))
+      }
     }
 
     ws.onclose = () => {
@@ -365,52 +340,53 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  function setFilter(state: SessionState | 'all' | 'needs_attention') {
-    filterState.value = state
-  }
-
-  function setSearch(query: string) {
-    searchQuery.value = query
-  }
-
   async function setAlias(sessionId: string, alias: string) {
-    // Optimistic update
     const s = sessions.value.get(sessionId)
-    if (s) {
-      s.alias = alias.trim()
-      s.display_name = alias.trim() || s.display_name
-    }
+    if (!s) return
 
-    await fetch(`/api/sessions/${sessionId}/alias`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ alias }),
-    })
-    // WS session_update will sync back the canonical display_name
+    const prevAlias = s.alias
+    const prevName = s.display_name
+    const nextAlias = alias.trim()
+    s.alias = nextAlias
+    s.display_name = nextAlias || s.display_name
+
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/alias`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alias }),
+      })
+      if (!res.ok) throw new Error('Failed to update alias')
+    } catch {
+      s.alias = prevAlias
+      s.display_name = prevName
+    }
   }
 
   async function setPinned(sessionId: string, pinned: boolean) {
-    // Optimistic update
     const s = sessions.value.get(sessionId)
-    if (s) s.pinned = pinned
+    if (!s) return
+    const prevPinned = s.pinned
+    s.pinned = pinned
 
-    await fetch(`/api/sessions/${sessionId}/pin`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pinned }),
-    })
-    // WS broadcast will also sync across tabs
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pin`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinned }),
+      })
+      if (!res.ok) throw new Error('Failed to update pin')
+    } catch {
+      s.pinned = prevPinned
+    }
   }
 
   return {
     sessions,
     selectedSessionId,
-    filterState,
-    searchQuery,
     wsConnected,
     frozenOrder,
     sortedSessions,
-    allSortedSessions,
     stateCounts,
     selectedSession,
     sessionTree,
@@ -419,8 +395,6 @@ export const useSessionStore = defineStore('session', () => {
     connect,
     disconnect,
     selectSession,
-    setFilter,
-    setSearch,
     setSidebarSearch,
     setAlias,
     setPinned,

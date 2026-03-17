@@ -11,6 +11,39 @@ import path from 'path'
 import os from 'os'
 import { fileURLToPath } from 'url'
 
+interface CommandHook {
+  type?: string
+  command?: string
+  timeout?: number
+}
+
+interface HookGroup {
+  hooks?: unknown[]
+}
+
+interface HooksContainer {
+  hooks?: unknown
+}
+
+interface ClaudeSettings extends HooksContainer {
+  [key: string]: unknown
+}
+
+interface CodexHooksConfig extends HooksContainer {
+  [key: string]: unknown
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function ensureHooksMap(container: HooksContainer): Record<string, unknown[]> {
+  if (!isObjectRecord(container.hooks)) {
+    container.hooks = {}
+  }
+  return container.hooks as Record<string, unknown[]>
+}
+
 const REQUIRED_EVENTS = [
   'SessionStart',
   'SessionEnd',
@@ -24,28 +57,26 @@ const REQUIRED_EVENTS = [
 
 /** Check if a specific hook script is already registered in an event's hook list */
 function hasHookScript(eventHooks: unknown[], scriptName: string): boolean {
-  return eventHooks.some((item: any) => {
+  return eventHooks.some((item) => {
     // Direct format: { type, command }
-    if (typeof item?.command === 'string' && item.command.includes(scriptName)) return true
+    if (isObjectRecord(item) && typeof item.command === 'string' && item.command.includes(scriptName)) return true
     // Hook-group format: { hooks: [{ type, command }] }
-    if (Array.isArray(item?.hooks)) {
-      return item.hooks.some(
-        (h: any) => typeof h?.command === 'string' && h.command.includes(scriptName)
-      )
+    if (isObjectRecord(item) && Array.isArray(item.hooks)) {
+      return item.hooks.some((h) => isObjectRecord(h) && typeof h.command === 'string' && h.command.includes(scriptName))
     }
     return false
   })
 }
 
 function removeHookScript(eventHooks: unknown[], scriptName: string): unknown[] {
-  return eventHooks.flatMap((item: any) => {
-    if (typeof item?.command === 'string') {
+  return eventHooks.flatMap((item) => {
+    if (isObjectRecord(item) && typeof item.command === 'string') {
       return item.command.includes(scriptName) ? [] : [item]
     }
 
-    if (Array.isArray(item?.hooks)) {
+    if (isObjectRecord(item) && Array.isArray(item.hooks)) {
       const hooks = item.hooks.filter(
-        (hook: any) => !(typeof hook?.command === 'string' && hook.command.includes(scriptName))
+        (hook) => !(isObjectRecord(hook) && typeof hook.command === 'string' && hook.command.includes(scriptName))
       )
       if (hooks.length === 0) return []
       return [{ ...item, hooks }]
@@ -93,7 +124,7 @@ export function setupHooks(options?: { packageRoot?: string }) {
 
   // ─── Read settings ───
 
-  let settings: any = {}
+  let settings: ClaudeSettings = {}
   let existed = true
 
   if (!fs.existsSync(SETTINGS_PATH)) {
@@ -101,17 +132,18 @@ export function setupHooks(options?: { packageRoot?: string }) {
     console.log(`\n  Creating new settings file at:\n  ${SETTINGS_PATH}\n`)
   } else {
     try {
-      settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'))
+      const parsed: unknown = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'))
+      settings = isObjectRecord(parsed) ? (parsed as ClaudeSettings) : {}
     } catch (e) {
       console.error(`\n  ✗ Failed to parse ${SETTINGS_PATH}:`, e)
       process.exit(1)
     }
   }
 
-  if (!settings.hooks) settings.hooks = {}
+  const settingsHooks = ensureHooksMap(settings)
 
   // New hook group entry to append (matches existing settings.json format)
-  const newEntry = {
+  const newEntry: HookGroup = {
     hooks: [{ type: 'command', command: `bash ${HOOK_SCRIPT}` }],
   }
 
@@ -121,26 +153,26 @@ export function setupHooks(options?: { packageRoot?: string }) {
   const skipped: string[] = []
 
   for (const event of REQUIRED_EVENTS) {
-    const existing: unknown[] = Array.isArray(settings.hooks[event]) ? settings.hooks[event] : []
+    const existing: unknown[] = Array.isArray(settingsHooks[event]) ? settingsHooks[event] : []
     if (hasHookScript(existing, 'session-hook.sh')) {
       skipped.push(event)
     } else {
-      settings.hooks[event] = [...existing, newEntry]
+      settingsHooks[event] = [...existing, newEntry]
       added.push(event)
     }
   }
 
   // ─── Session ID injection hook (SessionStart only) ───
 
-  const sessionIdEntry = {
+  const sessionIdEntry: HookGroup = {
     hooks: [{ type: 'command', command: `bash ${SESSION_ID_HOOK_SCRIPT}` }],
   }
 
-  const sessionStartHooks: unknown[] = Array.isArray(settings.hooks.SessionStart) ? settings.hooks.SessionStart : []
+  const sessionStartHooks: unknown[] = Array.isArray(settingsHooks.SessionStart) ? settingsHooks.SessionStart : []
   const hasSessionIdHook = hasHookScript(sessionStartHooks, 'session-id-hook.sh')
 
   if (!hasSessionIdHook) {
-    settings.hooks.SessionStart = [...sessionStartHooks, sessionIdEntry]
+    settingsHooks.SessionStart = [...sessionStartHooks, sessionIdEntry]
     added.push('SessionStart(session-id)')
   } else {
     skipped.push('SessionStart(session-id)')
@@ -196,25 +228,27 @@ export function setupCodexHooks(options?: { packageRoot?: string }) {
   }
 
   // 2. Write/update hooks.json with Codex SessionStart/Stop hooks
-  let hooksConfig: any = { hooks: {} }
+  let hooksConfig: CodexHooksConfig = { hooks: {} }
   let hooksExisted = false
 
   if (fs.existsSync(HOOKS_JSON_PATH)) {
     hooksExisted = true
     try {
-      hooksConfig = JSON.parse(fs.readFileSync(HOOKS_JSON_PATH, 'utf-8'))
-      if (!hooksConfig.hooks) hooksConfig.hooks = {}
+      const parsed: unknown = JSON.parse(fs.readFileSync(HOOKS_JSON_PATH, 'utf-8'))
+      hooksConfig = isObjectRecord(parsed) ? (parsed as CodexHooksConfig) : { hooks: {} }
     } catch {
       console.log('  ⚠ Failed to parse hooks.json, recreating...')
       hooksConfig = { hooks: {} }
     }
   }
 
-  const sessionStartHooksRaw: unknown[] = Array.isArray(hooksConfig.hooks.SessionStart)
-    ? hooksConfig.hooks.SessionStart
+  const codexHooks = ensureHooksMap(hooksConfig)
+
+  const sessionStartHooksRaw: unknown[] = Array.isArray(codexHooks.SessionStart)
+    ? codexHooks.SessionStart
     : []
-  const stopHooksRawUnfiltered: unknown[] = Array.isArray(hooksConfig.hooks.Stop)
-    ? hooksConfig.hooks.Stop
+  const stopHooksRawUnfiltered: unknown[] = Array.isArray(codexHooks.Stop)
+    ? codexHooks.Stop
     : []
 
   const sessionStartHooks = removeHookScript(sessionStartHooksRaw, 'session-id-hook.sh')
@@ -224,17 +258,17 @@ export function setupCodexHooks(options?: { packageRoot?: string }) {
 
   if (!hasStartHook) {
     sessionStartHooks.push({
-      hooks: [{ type: 'command', command: `bash ${CODEX_HOOK_SCRIPT}`, timeout: 5 }],
+      hooks: [{ type: 'command', command: `bash ${CODEX_HOOK_SCRIPT}`, timeout: 5 } as CommandHook],
     })
   }
   if (!hasStopHook) {
     stopHooksRaw.push({
-      hooks: [{ type: 'command', command: `bash ${CODEX_HOOK_SCRIPT}`, timeout: 5 }],
+      hooks: [{ type: 'command', command: `bash ${CODEX_HOOK_SCRIPT}`, timeout: 5 } as CommandHook],
     })
   }
 
-  hooksConfig.hooks.SessionStart = sessionStartHooks
-  hooksConfig.hooks.Stop = stopHooksRaw
+  codexHooks.SessionStart = sessionStartHooks
+  codexHooks.Stop = stopHooksRaw
 
   const hooksChanged =
     !hasStartHook ||

@@ -44,6 +44,7 @@ export class SessionManager {
   private stmtGetEvents: Database.Statement
   private stmtGetInsights: Database.Statement
   private stmtGetInsightsPaged: Database.Statement
+  private stmtGetInsightsCount: Database.Statement
   private stmtGetEventsPaged: Database.Statement
   private stmtGetEventsCount: Database.Statement
   private stmtCheckInsightExists: Database.Statement
@@ -84,6 +85,9 @@ export class SessionManager {
     this.stmtGetInsightsPaged = db.prepare(
       'SELECT * FROM insights WHERE session_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?'
     )
+    this.stmtGetInsightsCount = db.prepare(
+      'SELECT COUNT(*) as count FROM insights WHERE session_id = ?'
+    )
     this.stmtGetEventsPaged = db.prepare(
       'SELECT * FROM events WHERE session_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?'
     )
@@ -110,7 +114,7 @@ export class SessionManager {
     return {
       ...session,
       insights: session.insights.slice(0, SessionManager.INSIGHT_PAGE_SIZE),
-      total_insights: session.insights.length,
+      total_insights: session.total_insights,
     }
   }
 
@@ -119,7 +123,12 @@ export class SessionManager {
   private restoreFromDb() {
     const rows = this.stmtGetSessions.all() as any[]
     for (const row of rows) {
-      const insights = this.stmtGetInsights.all(row.session_id) as Insight[]
+      const insights = this.stmtGetInsightsPaged.all(
+        row.session_id,
+        SessionManager.INSIGHT_PAGE_SIZE,
+        0
+      ) as Insight[]
+      const countRow = this.stmtGetInsightsCount.get(row.session_id) as { count: number }
       const session: Session = {
         session_id: row.session_id,
         display_name: this.makeDisplayName(row.cwd, row.session_id, row.alias),
@@ -133,7 +142,7 @@ export class SessionManager {
         source: (row.source as 'claude' | 'codex') ?? 'claude',
         predecessor_id: row.predecessor_id || undefined,
         insights,
-        total_insights: insights.length,
+        total_insights: countRow.count,
         active_tools: 0,
         active_subagents: 0,
       }
@@ -229,12 +238,15 @@ export class SessionManager {
     const sid = payload.session_id
 
     let session = this.sessions.get(sid)
+    const isNew = !session
     if (!session) {
       session = this.createSession(sid, payload.cwd || '', payload.transcript_path, now, 'codex')
     }
 
     if (payload.cwd) session.cwd = payload.cwd
-    if (payload.transcript_path) session.transcript_path = payload.transcript_path
+    if (!isNew && payload.transcript_path && session.transcript_path !== payload.transcript_path) {
+      session.transcript_path = payload.transcript_path
+    }
     session.display_name = this.makeDisplayName(session.cwd, sid, session.alias)
 
     this.stmtInsertEvent.run(
@@ -450,7 +462,10 @@ export class SessionManager {
 
     // Prepend (newest first)
     session.insights.unshift(insight)
-    session.total_insights = session.insights.length
+    session.total_insights += 1
+    if (session.insights.length > 200) {
+      session.insights.length = 200
+    }
 
     // PRD §10.6: a new transcript insight is a real progress signal — resolve waiting
     if (source === 'transcript' && (session.state === 'waiting_user' || session.state === 'waiting_permission')) {
@@ -503,7 +518,7 @@ export class SessionManager {
       return row.count
     }
     const session = this.sessions.get(sessionId)
-    return session ? session.insights.length : 0
+    return session ? session.total_insights : 0
   }
 
   getSessionCount(): number {

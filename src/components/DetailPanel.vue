@@ -9,6 +9,8 @@ import { renderMarkdown } from '../utils/markdown'
 const store = useSessionStore()
 const prefs = usePreferencesStore()
 const PAGE_SIZE = 100
+let eventsRequestToken = 0
+let insightsRequestToken = 0
 
 // Alias inline edit
 const isEditingAlias = ref(false)
@@ -49,15 +51,22 @@ const hasMoreEvents = computed(() =>
 async function loadMoreEvents() {
   const id = store.selectedSessionId
   if (!id || loadingMoreEvents.value) return
+  const requestToken = eventsRequestToken
+  const offset = events.value.length
   loadingMoreEvents.value = true
   try {
-    const res = await fetch(`/api/sessions/${id}/events?limit=${PAGE_SIZE}&offset=${events.value.length}`)
+    const res = await fetch(`/api/sessions/${id}/events?limit=${PAGE_SIZE}&offset=${offset}`)
     const json = await res.json()
+    if (requestToken !== eventsRequestToken || store.selectedSessionId !== id) return
     const newEvents = json.data || []
     events.value.push(...newEvents)
     if (newEvents.length < PAGE_SIZE) allEventsLoaded.value = true
   } catch { /* ignore */ }
-  loadingMoreEvents.value = false
+  finally {
+    if (requestToken === eventsRequestToken) {
+      loadingMoreEvents.value = false
+    }
+  }
 }
 
 // ─── Insights pagination ───
@@ -86,13 +95,22 @@ const hasMoreInsights = computed(() =>
 async function loadMoreInsights() {
   const id = store.selectedSessionId
   if (!id || loadingMoreInsights.value) return
-  const offset = prefs.showUserPrompts ? allInsights.value.length : displayedInsights.value.length
+  const requestToken = insightsRequestToken
+  const showUserPrompts = prefs.showUserPrompts
+  const offset = showUserPrompts ? allInsights.value.length : displayedInsights.value.length
   loadingMoreInsights.value = true
   try {
     let url = `/api/sessions/${id}/insights?limit=${PAGE_SIZE}&offset=${offset}`
-    if (!prefs.showUserPrompts) url += '&exclude_source=user'
+    if (!showUserPrompts) url += '&exclude_source=user'
     const res = await fetch(url)
     const json = await res.json()
+    if (
+      requestToken !== insightsRequestToken ||
+      store.selectedSessionId !== id ||
+      prefs.showUserPrompts !== showUserPrompts
+    ) {
+      return
+    }
     const newInsights = json.data || []
     totalInsights.value = json.total ?? totalInsights.value
     extraInsights.value.push(...newInsights)
@@ -102,7 +120,11 @@ async function loadMoreInsights() {
       allInsightsLoaded.value = true
     }
   } catch { /* ignore */ }
-  loadingMoreInsights.value = false
+  finally {
+    if (requestToken === insightsRequestToken) {
+      loadingMoreInsights.value = false
+    }
+  }
 }
 
 // ─── Session change: reset pagination & load events ───
@@ -110,6 +132,8 @@ async function loadMoreInsights() {
 watch(
   () => store.selectedSessionId,
   async (id) => {
+    const requestToken = ++eventsRequestToken
+
     // Reset alias edit
     isEditingAlias.value = false
 
@@ -126,21 +150,30 @@ watch(
     loadingMoreEvents.value = false
     loadError.value = false
 
-    if (!id) return
+    if (!id) {
+      loading.value = false
+      return
+    }
 
     loading.value = true
     try {
       const res = await fetch(`/api/sessions/${id}/events?limit=${PAGE_SIZE}&offset=0`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json()
+      if (requestToken !== eventsRequestToken || store.selectedSessionId !== id) return
       events.value = json.data || []
       totalEvents.value = json.total ?? 0
       allEventsLoaded.value = events.value.length >= totalEvents.value
     } catch {
+      if (requestToken !== eventsRequestToken || store.selectedSessionId !== id) return
       events.value = []
       loadError.value = true
     }
-    loading.value = false
+    finally {
+      if (requestToken === eventsRequestToken) {
+        loading.value = false
+      }
+    }
   },
   { immediate: true }
 )
@@ -148,6 +181,8 @@ watch(
 watch(
   () => [store.selectedSessionId, prefs.showUserPrompts] as const,
   async ([id]) => {
+    const requestToken = ++insightsRequestToken
+
     totalInsights.value = prefs.showUserPrompts
       ? (store.selectedSession?.total_insights ?? 0)
       : displayedInsights.value.length
@@ -157,6 +192,13 @@ watch(
     try {
       const res = await fetch(`/api/sessions/${id}/insights?limit=0&offset=0&exclude_source=user`)
       const json = await res.json()
+      if (
+        requestToken !== insightsRequestToken ||
+        store.selectedSessionId !== id ||
+        prefs.showUserPrompts
+      ) {
+        return
+      }
       totalInsights.value = json.total ?? totalInsights.value
       allInsightsLoaded.value = displayedInsights.value.length >= totalInsights.value
     } catch { /* ignore */ }

@@ -246,12 +246,8 @@ function cmdStatus() {
 }
 
 async function cmdInsights() {
-  // Rewrite argv so read-insights sees the right args
-  // Original: session-dashboard insights --session abc --limit 30
-  // Need:     read-insights --session abc --limit 30
-  process.argv = [process.argv[0], 'insights', ...process.argv.slice(3)]
   const { main } = await import('../scripts/read-insights.js')
-  main()
+  main(process.argv.slice(3))
 }
 
 function cmdOpen() {

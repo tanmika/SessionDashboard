@@ -10,7 +10,8 @@
   "files": [
     "lib/",
     "dist/",
-    "hooks/"
+    "hooks/",
+    "scripts/*.js"
   ],
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
@@ -19,6 +20,7 @@
     "build": "npm run build:client && npm run build:server",
     "build:client": "vue-tsc -b && vite build",
     "build:server": "node build-server.mjs",
+    "verify:smoke": "npm run build && node scripts/verify-smoke.js",
     "prepublishOnly": "npm run build",
     "preview": "vite preview",
     "setup:hooks": "tsx scripts/setup-hooks.ts",

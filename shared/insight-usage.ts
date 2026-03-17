@@ -22,7 +22,7 @@ export const INSIGHT_USAGE_MANUAL = `## Session Insight Recovery（强制执行�
 
 ### 你的 session_id
 
-通过 SessionStart hook 自动注入（格式: "Your current session_id is: xxx"）。如果上下文中找不到，运行 \`session-dashboard insights --list\` 查看活跃 session。
+通过 SessionStart hook 自动注入（格式: "Your current session_id is: xxx"）。如果上下文中找不到，运行 \`session-dashboard insights --list\` 查看最近活跃 session。
 
 ### 执行步骤
 

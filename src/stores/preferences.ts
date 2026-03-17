@@ -53,8 +53,11 @@ export const usePreferencesStore = defineStore('preferences', () => {
 
   function toggleSidebarFilter(state: string) {
     const idx = sidebarFilters.value.indexOf(state)
-    if (idx >= 0) sidebarFilters.value.splice(idx, 1)
-    else sidebarFilters.value.push(state)
+    if (idx >= 0) {
+      sidebarFilters.value = sidebarFilters.value.filter((_, i) => i !== idx)
+    } else {
+      sidebarFilters.value = [...sidebarFilters.value, state]
+    }
   }
 
   function clearSidebarFilters() {

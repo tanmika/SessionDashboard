@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useSessionStore } from '../stores/session'
 import { usePreferencesStore } from '../stores/preferences'
 import HooksStatus from './HooksStatus.vue'
@@ -7,6 +7,27 @@ import HooksStatus from './HooksStatus.vue'
 const store = useSessionStore()
 const prefs = usePreferencesStore()
 const showSettings = ref(false)
+const settingsWrap = ref<HTMLElement | null>(null)
+
+function toggleSettings() {
+  showSettings.value = !showSettings.value
+}
+
+function handleDocumentClick(event: MouseEvent) {
+  if (!showSettings.value) return
+  const target = event.target as Node | null
+  if (!target) return
+  if (settingsWrap.value?.contains(target)) return
+  showSettings.value = false
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleDocumentClick)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', handleDocumentClick)
+})
 
 </script>
 
@@ -27,8 +48,8 @@ const showSettings = ref(false)
         </div>
         <div class="status-row">
           <HooksStatus />
-          <div class="settings-wrap">
-            <button class="settings-btn" @click="showSettings = !showSettings">Settings</button>
+          <div class="settings-wrap" ref="settingsWrap">
+            <button class="settings-btn" @click="toggleSettings">Settings</button>
             <div v-if="showSettings" class="settings-panel">
               <label class="setting-item">
                 <input type="checkbox" v-model="prefs.showUserPrompts" />

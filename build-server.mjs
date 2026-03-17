@@ -4,6 +4,7 @@
  * Produces:
  *   lib/server.js  — Express server bundle
  *   lib/cli.js     — CLI entry point (with shebang)
+ *   scripts/*.js   — CLI helper modules used at runtime
  *
  * better-sqlite3 is marked external (native C++ addon, cannot be bundled).
  */
@@ -37,5 +38,18 @@ await build({
   banner: { js: '#!/usr/bin/env node' },
 })
 
+// CLI helper modules loaded dynamically by lib/cli.js
+await build({
+  ...commonOptions,
+  entryPoints: [
+    'scripts/setup-hooks.ts',
+    'scripts/setup-codex.ts',
+    'scripts/read-insights.ts',
+    'scripts/verify-smoke.ts',
+  ],
+  outdir: 'scripts',
+})
+
 console.log('  ✓ lib/server.js')
 console.log('  ✓ lib/cli.js')
+console.log('  ✓ scripts/*.js')
