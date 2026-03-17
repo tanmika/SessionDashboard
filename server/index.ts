@@ -27,7 +27,7 @@ const wss = createWsServer(httpServer, sessionManager)
 sessionManager.setBroadcast(wss.broadcast)
 
 // Mount API routes
-app.use('/api', createEventRoutes(sessionManager))
+app.use('/api', createEventRoutes(sessionManager, db))
 app.use('/api', createHookRoutes())
 
 // Health check

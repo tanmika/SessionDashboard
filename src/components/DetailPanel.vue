@@ -2,7 +2,12 @@
 import { ref, watch, computed } from 'vue'
 import { useSessionStore } from '../stores/session'
 import { usePreferencesStore } from '../stores/preferences'
-import type { SessionEvent, Insight } from '../../shared/types'
+import type {
+  SessionEvent,
+  Insight,
+  SessionExportData,
+  SessionExportMissingSession,
+} from '../../shared/types'
 import { formatRelativeTime } from '../utils/time'
 import { renderMarkdown } from '../utils/markdown'
 
@@ -32,6 +37,84 @@ function cancelAliasEdit() {
   isEditingAlias.value = false
 }
 
+function openExportModal() {
+  exportModalOpen.value = true
+  exportBusy.value = false
+  exportAllDepth.value = false
+  exportDepth.value = 1
+  exportError.value = ''
+  exportMissingSessions.value = []
+}
+
+function closeExportModal() {
+  exportModalOpen.value = false
+  exportBusy.value = false
+  exportError.value = ''
+  exportMissingSessions.value = []
+}
+
+function getExportDepth(): number | 'all' {
+  return exportAllDepth.value ? 'all' : Math.max(0, Math.floor(exportDepth.value || 0))
+}
+
+async function requestExport(mode: 'conversation' | 'insights'): Promise<SessionExportData | null> {
+  const id = store.selectedSessionId
+  if (!id) return null
+
+  const depth = getExportDepth()
+  const params = new URLSearchParams({
+    mode,
+    depth: depth === 'all' ? 'all' : String(depth),
+  })
+
+  exportBusy.value = true
+  exportError.value = ''
+  exportMissingSessions.value = []
+  try {
+    const res = await fetch(`/api/sessions/${id}/export?${params.toString()}`)
+    const json = await res.json()
+    if (!res.ok) {
+      exportError.value = json.error || 'Export failed.'
+      exportMissingSessions.value = json.detail?.missing_sessions || []
+      return null
+    }
+    return json.data as SessionExportData
+  } catch {
+    exportError.value = 'Export request failed.'
+    return null
+  } finally {
+    exportBusy.value = false
+  }
+}
+
+function downloadTextFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+async function downloadExport(mode: 'conversation' | 'insights') {
+  const data = await requestExport(mode)
+  if (!data) return
+  downloadTextFile(data.filename, data.content)
+  closeExportModal()
+}
+
+async function copyExport(mode: 'conversation' | 'insights') {
+  const data = await requestExport(mode)
+  if (!data) return
+  try {
+    await navigator.clipboard.writeText(data.content)
+    closeExportModal()
+  } catch {
+    exportError.value = 'Copy to clipboard failed.'
+  }
+}
+
 // ─── Events pagination ───
 
 const events = ref<SessionEvent[]>([])
@@ -43,6 +126,12 @@ const allEventsLoaded = ref(false)
 
 const insightsExpanded = ref(true)
 const eventsExpanded = ref(true)
+const exportModalOpen = ref(false)
+const exportBusy = ref(false)
+const exportAllDepth = ref(false)
+const exportDepth = ref(1)
+const exportError = ref('')
+const exportMissingSessions = ref<SessionExportMissingSession[]>([])
 
 const hasMoreEvents = computed(() =>
   !allEventsLoaded.value && events.value.length < totalEvents.value
@@ -211,7 +300,10 @@ watch(
   <aside class="detail-panel" v-if="store.selectedSession">
     <div class="panel-header">
       <h2>Session Detail</h2>
-      <button class="close-btn" @click="store.selectSession(null)">Close</button>
+      <div class="panel-actions">
+        <button class="export-btn" @click="openExportModal">Export</button>
+        <button class="close-btn" @click="store.selectSession(null)">Close</button>
+      </div>
     </div>
 
     <div class="panel-body">
@@ -337,6 +429,69 @@ watch(
       </section>
     </div>
   </aside>
+
+  <Teleport to="body">
+    <div v-if="exportModalOpen" class="export-overlay" @click.self="closeExportModal">
+      <div class="export-modal">
+        <div class="export-modal-header">
+          <h3>Export Session</h3>
+          <button class="close-btn" @click="closeExportModal">Close</button>
+        </div>
+
+        <div class="export-body">
+          <label class="export-option">
+            <span class="info-label">Predecessor Depth</span>
+            <div class="export-depth-row">
+              <input
+                type="number"
+                min="0"
+                class="export-depth-input"
+                v-model.number="exportDepth"
+                :disabled="exportAllDepth"
+              />
+              <label class="export-all-toggle">
+                <input type="checkbox" v-model="exportAllDepth" />
+                <span>All</span>
+              </label>
+            </div>
+            <span class="export-hint">`0` = current only, `1` = current + 1 predecessor</span>
+          </label>
+
+          <div class="export-actions">
+            <button class="export-action primary" :disabled="exportBusy" @click="downloadExport('conversation')">
+              {{ exportBusy ? '处理中...' : 'Download Conversation' }}
+            </button>
+            <button class="export-action" :disabled="exportBusy" @click="copyExport('conversation')">
+              Copy Conversation
+            </button>
+          </div>
+
+          <div v-if="exportError" class="export-warning">
+            <div class="warning-title">Conversation export unavailable</div>
+            <div class="warning-text">{{ exportError }}</div>
+            <div v-if="exportMissingSessions.length > 0" class="warning-list">
+              <div
+                v-for="missing in exportMissingSessions"
+                :key="missing.session_id"
+                class="warning-item"
+              >
+                <div class="mono">{{ missing.session_id.slice(0, 12) }} · {{ missing.display_name }}</div>
+                <div>{{ missing.reason }}</div>
+              </div>
+            </div>
+            <div class="export-actions">
+              <button class="export-action primary" :disabled="exportBusy" @click="downloadExport('insights')">
+                Download Insight Fallback
+              </button>
+              <button class="export-action" :disabled="exportBusy" @click="copyExport('insights')">
+                Copy Insight Fallback
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -363,6 +518,11 @@ watch(
   border-bottom: 1px solid var(--border);
 }
 
+.panel-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .panel-header h2 {
   margin: 0;
   font-size: 18px;
@@ -381,6 +541,20 @@ watch(
 .close-btn:hover {
   background: rgba(255, 255, 255, 0.1);
   color: var(--text);
+}
+
+.export-btn {
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(124, 156, 255, 0.28);
+  background: rgba(124, 156, 255, 0.14);
+  color: #eef3ff;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.export-btn:hover {
+  background: rgba(124, 156, 255, 0.2);
 }
 
 .panel-body {
@@ -466,6 +640,139 @@ watch(
 
 .info-value.small {
   font-size: 11px;
+}
+
+.export-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 10, 18, 0.68);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 150;
+  padding: 20px;
+}
+
+.export-modal {
+  width: min(520px, 100%);
+  border-radius: 18px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.export-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 18px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.export-modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--text);
+}
+
+.export-body {
+  padding: 18px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.export-option {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.export-depth-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.export-depth-input {
+  width: 96px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.export-all-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.export-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.export-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.export-action {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.export-action.primary {
+  background: linear-gradient(135deg, rgba(124, 156, 255, 0.28), rgba(84, 211, 194, 0.18));
+  border-color: rgba(124, 156, 255, 0.3);
+}
+
+.export-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.export-warning {
+  border-radius: 14px;
+  padding: 14px;
+  background: rgba(255, 184, 77, 0.08);
+  border: 1px solid rgba(255, 184, 77, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.warning-title {
+  font-weight: 600;
+  color: #ffd89b;
+}
+
+.warning-text {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.warning-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.warning-item {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.14);
+  font-size: 12px;
+  color: var(--muted);
 }
 
 /* Timeline */

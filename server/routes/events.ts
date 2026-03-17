@@ -1,6 +1,8 @@
 import { Router } from 'express'
+import type Database from 'better-sqlite3'
 import type { HookEventPayload } from '../../shared/types.js'
 import type { SessionManager } from '../services/session-manager.js'
+import { exportSessionText } from '../services/session-export.js'
 
 function parseBoundedInt(
   value: unknown,
@@ -15,7 +17,16 @@ function parseBoundedInt(
   return Math.min(Math.max(parsed, min), max)
 }
 
-export function createEventRoutes(sessionManager: SessionManager): Router {
+function parseExportDepth(value: unknown): number | 'all' {
+  const raw = Array.isArray(value) ? value[0] : value
+  if (raw == null || raw === '') return 1
+  if (raw === 'all') return 'all'
+  const parsed = Number.parseInt(String(raw), 10)
+  if (Number.isNaN(parsed)) return 1
+  return Math.max(0, parsed)
+}
+
+export function createEventRoutes(sessionManager: SessionManager, db: Database.Database): Router {
   const router = Router()
 
   // Receive hook events from Claude Code / Codex CLI
@@ -71,6 +82,29 @@ export function createEventRoutes(sessionManager: SessionManager): Router {
     const data = sessionManager.getSessionInsights(req.params.id, limit, offset, excludeSource)
     const total = sessionManager.getSessionInsightsTotal(req.params.id, excludeSource)
     res.json({ ok: true, data, total })
+  })
+
+  router.get('/sessions/:id/export', (req, res) => {
+    const mode = req.query.mode === 'insights' ? 'insights' : 'conversation'
+    const depth = parseExportDepth(req.query.depth)
+    const result = exportSessionText(db, {
+      sessionId: req.params.id,
+      mode,
+      depth,
+    })
+
+    if (!result.ok) {
+      const status =
+        result.error.error === 'session_not_found'
+          ? 404
+          : result.error.error === 'ambiguous_session'
+            ? 409
+            : 409
+      res.status(status).json({ ok: false, error: result.error.message, detail: result.error })
+      return
+    }
+
+    res.json({ ok: true, data: result.data })
   })
 
   // Set or clear session alias
