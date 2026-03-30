@@ -37,6 +37,7 @@ export function applySchema(db: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
     CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_events_lookup ON events(session_id, event_name, timestamp);
     CREATE INDEX IF NOT EXISTS idx_insights_session ON insights(session_id);
     CREATE INDEX IF NOT EXISTS idx_insights_timestamp ON insights(timestamp);
   `)
@@ -45,6 +46,8 @@ export function applySchema(db: Database.Database) {
   try { db.exec(`ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE sessions ADD COLUMN alias TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'`) } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE sessions ADD COLUMN is_subagent INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE sessions ADD COLUMN parent_session_id TEXT DEFAULT ''`) } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE sessions ADD COLUMN predecessor_id TEXT DEFAULT ''`) } catch { /* already exists */ }
 }
 

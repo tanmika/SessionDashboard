@@ -11,11 +11,38 @@ const CODEX_INDEX_PATH = join(homedir(), '.codex', 'session_index.jsonl')
 const SCAN_DAYS = 7
 
 export interface CodexSessionCallbacks {
-  onSessionDiscovered: (sessionId: string, cwd: string, displayName: string, rolloutPath: string, timestamp: string) => void
+  onSessionDiscovered: (
+    sessionId: string,
+    cwd: string,
+    displayName: string,
+    rolloutPath: string,
+    timestamp: string,
+    metadata: { isSubagent: boolean, parentSessionId?: string }
+  ) => void
   onStateChange: (sessionId: string, newState: 'active' | 'inactive', timestamp: string) => void
-  onInsight: (sessionId: string, content: string) => void
-  onUserInput: (sessionId: string, content: string) => void
+  onInsight: (sessionId: string, content: string, timestamp: string) => void
+  onUserInput: (sessionId: string, content: string, timestamp: string) => void
   onEvent: (sessionId: string, eventName: string, timestamp: string, rawPayload: string) => void
+}
+
+export function readCodexSessionMetadata(
+  rolloutPath: string
+): { isSubagent: boolean, parentSessionId?: string } {
+  if (!existsSync(rolloutPath)) return { isSubagent: false }
+
+  try {
+    const firstLine = readFileSync(rolloutPath, 'utf-8').split('\n', 1)[0]?.trim()
+    if (!firstLine) return { isSubagent: false }
+
+    const record = JSON.parse(firstLine)
+    const threadSpawn = record?.payload?.source?.subagent?.thread_spawn
+    return {
+      isSubagent: Boolean(threadSpawn),
+      parentSessionId: threadSpawn?.parent_thread_id || undefined,
+    }
+  } catch {
+    return { isSubagent: false }
+  }
 }
 
 interface RolloutState {
@@ -24,6 +51,8 @@ interface RolloutState {
   offset: number
   seenHashes: Set<string>
   watcher: FSWatcher | null
+  isSubagent: boolean
+  parentSessionId?: string
 }
 
 export class CodexWatcher {
@@ -148,6 +177,7 @@ export class CodexWatcher {
       offset: 0,
       seenHashes: new Set(),
       watcher: null,
+      isSubagent: false,
     }
 
     // Parse to discover session and process events
@@ -221,7 +251,22 @@ export class CodexWatcher {
         state.sessionId = id
         const cwd = payload.cwd || ''
         const threadName = this.threadNames.get(id) || ''
-        this.callbacks.onSessionDiscovered(id, cwd, threadName, state.path, payload.timestamp || timestamp)
+        const threadSpawn = payload.source?.subagent?.thread_spawn
+        state.isSubagent = Boolean(threadSpawn)
+        state.parentSessionId = typeof threadSpawn?.parent_thread_id === 'string'
+          ? threadSpawn.parent_thread_id
+          : undefined
+        this.callbacks.onSessionDiscovered(
+          id,
+          cwd,
+          threadName,
+          state.path,
+          payload.timestamp || timestamp,
+          {
+            isSubagent: state.isSubagent,
+            parentSessionId: state.parentSessionId,
+          }
+        )
         break
       }
 
@@ -240,15 +285,15 @@ export class CodexWatcher {
         // Capture user input
         if (eventType === 'user_message') {
           const raw: string = payload.message || ''
-          const sanitized = sanitizeUserInput(raw)
+          const sanitized = sanitizeUserInput(raw, 'codex')
           if (sanitized) {
             const hash = contentHash(sanitized)
             if (!state.seenHashes.has(hash)) {
               state.seenHashes.add(hash)
               if (state.seenHashes.size > 5000) {
-                state.seenHashes.clear()
-              }
-              this.callbacks.onUserInput(state.sessionId, sanitized)
+              state.seenHashes.clear()
+            }
+              this.callbacks.onUserInput(state.sessionId, sanitized, timestamp)
             }
           }
         }
@@ -257,7 +302,7 @@ export class CodexWatcher {
         if (eventType === 'agent_message' && payload.phase !== 'commentary') {
           const message: string = payload.message || payload.last_agent_message || ''
           if (message.length >= 20) {
-            this.extractAndEmitInsights(state, message)
+            this.extractAndEmitInsights(state, message, timestamp)
           }
         }
 
@@ -265,7 +310,7 @@ export class CodexWatcher {
         if (eventType === 'task_complete' && payload.last_agent_message) {
           const msg: string = payload.last_agent_message
           if (msg.length >= 20) {
-            this.extractAndEmitInsights(state, msg)
+            this.extractAndEmitInsights(state, msg, timestamp)
           }
         }
 
@@ -277,7 +322,7 @@ export class CodexWatcher {
     }
   }
 
-  private extractAndEmitInsights(state: RolloutState, text: string) {
+  private extractAndEmitInsights(state: RolloutState, text: string, timestamp: string) {
     const blocks = extractInsightBlocks(text)
     for (const block of blocks) {
       const hash = contentHash(block)
@@ -286,7 +331,7 @@ export class CodexWatcher {
       if (state.seenHashes.size > 5000) {
         state.seenHashes.clear()
       }
-      this.callbacks.onInsight(state.sessionId, block)
+      this.callbacks.onInsight(state.sessionId, block, timestamp)
     }
   }
 }
