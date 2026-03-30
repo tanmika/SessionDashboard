@@ -46,6 +46,7 @@ await build({
     'scripts/setup-codex.ts',
     'scripts/read-insights.ts',
     'scripts/export-session.ts',
+    'scripts/repair-dashboard.ts',
     'scripts/verify-smoke.ts',
   ],
   outdir: 'scripts',
