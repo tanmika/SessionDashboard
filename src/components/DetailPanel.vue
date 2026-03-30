@@ -349,6 +349,17 @@ watch(
             <span class="info-value">{{ store.selectedSession.source === 'codex' ? 'Codex CLI' : 'Claude Code' }}</span>
           </div>
           <div class="info-item">
+            <span class="info-label">Kind</span>
+            <span class="info-value">{{ store.selectedSession.is_subagent ? '子代理' : '主会话' }}</span>
+          </div>
+          <div class="info-item" v-if="store.selectedSession.parent_session_id">
+            <span class="info-label">Parent Session</span>
+            <span
+              class="info-value mono predecessor-link"
+              @click="store.selectSession(store.selectedSession!.parent_session_id!)"
+            >{{ store.selectedSession.parent_session_id.slice(0, 8) }}… ↗</span>
+          </div>
+          <div class="info-item">
             <span class="info-label">State</span>
             <span class="info-value">{{ store.selectedSession.state }}</span>
           </div>
