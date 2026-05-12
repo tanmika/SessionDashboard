@@ -774,6 +774,28 @@ function verifyInsightsChainFlagParsing(tempRoot: string) {
     `--json must still produce JSON output: '--chain' must not have consumed it, got stdout: ${flagThenFlag.stdout.slice(0, 200)}`
   )
 
+  // Case E: --list --chain --cwd is explicitly rejected (Task 4.4 will integrate it).
+  const cwdCombo = spawnNode(
+    [join(repoRoot, 'lib/cli.js'), 'insights', '--list', '--chain', '--cwd', '/tmp/x'],
+    { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
+  )
+  assert.notEqual(cwdCombo.status, 0, '--list --chain --cwd should reject until Task 4.4')
+  assert(
+    cwdCombo.stderr.includes('not yet supported'),
+    `--cwd + --list --chain should emit clear error, got: ${cwdCombo.stderr.slice(0, 200)}`
+  )
+
+  // Case F: --list --chain --range is explicitly rejected.
+  const rangeCombo = spawnNode(
+    [join(repoRoot, 'lib/cli.js'), 'insights', '--list', '--chain', '--range', 'week'],
+    { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
+  )
+  assert.notEqual(rangeCombo.status, 0, '--list --chain --range should reject until Task 4.4')
+  assert(
+    rangeCombo.stderr.includes('not yet supported'),
+    `--range + --list --chain should emit clear error, got: ${rangeCombo.stderr.slice(0, 200)}`
+  )
+
   console.log('verify: insights chain flag parsing')
 }
 

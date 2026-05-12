@@ -606,7 +606,7 @@ function listChains(db: Database.Database, _args: Args): ChainSummary[] {
         main_session_ids: [],
         subagent_session_ids: [],
         sessions_count: 0,
-        representative_session_id: '',
+        representative_session_id: row.session_id,
         insights_count: 0,
         chain_started_at: row.created_at,
         chain_last_activity: row.last_activity,
@@ -617,18 +617,17 @@ function listChains(db: Database.Database, _args: Args): ChainSummary[] {
     chain.main_session_ids.push(row.session_id)
     chain.sessions_count += 1
     if (row.created_at < chain.chain_started_at) chain.chain_started_at = row.created_at
-    if (row.last_activity >= chain.chain_last_activity) {
+    // Strict-greater wins outright; on equal timestamps, smaller session_id
+    // wins so representative_session_id is deterministic across runs.
+    if (
+      row.last_activity > chain.chain_last_activity ||
+      (row.last_activity === chain.chain_last_activity &&
+       row.session_id < chain.representative_session_id)
+    ) {
       chain.chain_last_activity = row.last_activity
       chain.representative_session_id = row.session_id
     }
     // cwd: all main sessions in a chain should share cwd; keep the first.
-  }
-
-  // Initialize representative_session_id for chains with only one main session.
-  for (const chain of chainsMap.values()) {
-    if (!chain.representative_session_id && chain.main_session_ids.length > 0) {
-      chain.representative_session_id = chain.main_session_ids[0]
-    }
   }
 
   // Attach subagent ids.
@@ -640,6 +639,9 @@ function listChains(db: Database.Database, _args: Args): ChainSummary[] {
   // Step 2: count main区 insights per chain.
   if (chainsMap.size > 0) {
     const chainIds = [...chainsMap.keys()]
+    // chainIds.length is bounded by SQLITE_LIMIT_VARIABLE_NUMBER (32766 in bundled
+    // SQLite 3.45+). Practical cap for current users; chunk this IN list if we
+    // ever ship to a scale where >30K chains exist in one DB.
     const placeholders = chainIds.map(() => '?').join(',')
     const insightCounts = db.prepare(`
       SELECT s.chain_id, COUNT(i.id) AS cnt
@@ -654,8 +656,12 @@ function listChains(db: Database.Database, _args: Args): ChainSummary[] {
     }
   }
 
-  // Sort by chain_last_activity DESC.
-  return [...chainsMap.values()].sort((a, b) => b.chain_last_activity.localeCompare(a.chain_last_activity))
+  // Sort by chain_last_activity DESC; tie-break by chain_id ASC for determinism.
+  return [...chainsMap.values()].sort((a, b) => {
+    const ts = b.chain_last_activity.localeCompare(a.chain_last_activity)
+    if (ts !== 0) return ts
+    return a.chain_id.localeCompare(b.chain_id)
+  })
 }
 
 function printChainList(chains: ChainSummary[]) {
@@ -1007,6 +1013,19 @@ export function main(argvInput?: string[]) {
   if (args.chainId && args.session) {
     console.error('Error: --chain <id> cannot be combined with --session. Use --chain <id> for chain read mode or --session <id> for session read mode.')
     process.exit(1)
+  }
+
+  if (args.list && args.chain) {
+    // Filters not yet integrated with chain list mode (Task 4.4 territory).
+    // Explicit rejection is preferable to silent fall-through to session-list paths.
+    if (args.cwd) {
+      console.error('Error: --cwd is not yet supported with --list --chain (coming in a later task).')
+      process.exit(2)
+    }
+    if (args.range || args.since || args.until) {
+      console.error('Error: --range / --since / --until are not yet supported with --list --chain (coming in a later task).')
+      process.exit(2)
+    }
   }
 
   if (args.chainId) {
