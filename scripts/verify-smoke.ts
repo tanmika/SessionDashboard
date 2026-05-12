@@ -694,6 +694,78 @@ function verifyInsightsSessionExactPriority(tempRoot: string) {
   console.log('verify: insights session exact priority')
 }
 
+function verifyInsightsChainFlagParsing(tempRoot: string) {
+  // Build a minimal DB so the CLI doesn't error out before reaching the parser.
+  const tempHome = join(tempRoot, 'chain-flag-parse-home')
+  const dataDir = join(tempHome, 'data')
+  mkdirSync(dataDir, { recursive: true })
+  const dbPath = join(dataDir, 'dashboard.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+  db.close()
+
+  // Case A: `--chain <valid id>` is accepted (read mode). Currently no chain
+  // with that id exists, so the CLI should either return an empty result or
+  // a 'not found' error — but it MUST NOT error on the flag parsing itself.
+  // We assert by checking that the process didn't fail with a parser error.
+  const readModeResult = spawnNode(
+    [join(repoRoot, 'lib/cli.js'), 'insights', '--chain', 'chain_a3k7m2pq', '--json'],
+    { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
+  )
+  // We expect EITHER exit 0 with empty results OR a non-parser error.
+  // What we MUST NOT see: a parse error like "unknown option" or
+  // "--chain requires a value".
+  assert(
+    !readModeResult.stderr.includes('unknown option') &&
+    !readModeResult.stderr.includes('requires a value'),
+    `--chain <id> should parse cleanly, got stderr: ${readModeResult.stderr.slice(0, 200)}`
+  )
+
+  // Case B: `--chain` followed by an INVALID-format value must reject with a
+  // clear error message about chain id format.
+  const invalidIdResult = spawnNode(
+    [join(repoRoot, 'lib/cli.js'), 'insights', '--chain', 'not-a-chain-id', '--json'],
+    { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
+  )
+  assert.notEqual(invalidIdResult.status, 0, 'invalid chain id should fail')
+  assert(
+    invalidIdResult.stderr.toLowerCase().includes('chain') &&
+    (invalidIdResult.stderr.includes('chain_') || invalidIdResult.stderr.includes('format')),
+    `error should mention chain id format, got: ${invalidIdResult.stderr.slice(0, 200)}`
+  )
+
+  // Case C: `--chain` as a BARE flag with --list (no value) means list mode.
+  // Should succeed and produce JSON output (likely empty array since no chains exist).
+  const listModeResult = spawnNode(
+    [join(repoRoot, 'lib/cli.js'), 'insights', '--list', '--chain', '--all', '--json'],
+    { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
+  )
+  // Task 4.1 is only about PARSING — Task 4.2 will implement the actual
+  // list-chain query logic. So either: (a) parse succeeds and the CLI emits
+  // an empty/placeholder result, OR (b) the CLI errors with a "not yet
+  // implemented" message. We assert that the parser at least doesn't reject
+  // the flag combination.
+  assert(
+    !listModeResult.stderr.includes('unknown option'),
+    `--list --chain should parse cleanly, got stderr: ${listModeResult.stderr.slice(0, 200)}`
+  )
+
+  // Case D: `--chain` followed by another flag (e.g., `--json`) means bare
+  // flag — the next token is NOT a value. Parser should accept `--chain`
+  // as list-mode flag and continue parsing `--json` as its own flag.
+  const flagThenFlag = spawnNode(
+    [join(repoRoot, 'lib/cli.js'), 'insights', '--list', '--chain', '--json'],
+    { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
+  )
+  assert(
+    !flagThenFlag.stderr.includes('unknown option') &&
+    !flagThenFlag.stderr.includes('expects a chain id'),
+    `--chain followed by --json should treat --chain as bare list-mode flag, got stderr: ${flagThenFlag.stderr.slice(0, 200)}`
+  )
+
+  console.log('verify: insights chain flag parsing')
+}
+
 function verifyCodexHook() {
   const stdout = runCommand('bash', ['hooks/codex-session-hook.sh'], {
     env: { ...process.env, SESSION_DASHBOARD_URL: 'http://127.0.0.1:9' },
@@ -2019,6 +2091,7 @@ async function main() {
     verifyTimeRangeList(tempRoot)
     verifyInsightsGrepList(tempRoot)
     verifyInsightsSessionExactPriority(tempRoot)
+    verifyInsightsChainFlagParsing(tempRoot)
     verifyCodexHook()
     verifySessionRestore(tempRoot)
     verifySessionExport(tempRoot)

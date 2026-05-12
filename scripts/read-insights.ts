@@ -11,6 +11,7 @@
 
 import Database from 'better-sqlite3'
 import { resolve } from 'node:path'
+import { isChainId } from '../shared/chain-id.js'
 import { getDbPath } from '../shared/config.js'
 import { resolveTimeRange, type TimeRange } from '../shared/time-range.js'
 
@@ -26,7 +27,9 @@ interface Args {
   limit: number
   offset: number
   grep?: string
-  chain: boolean
+  chain: boolean         // --list --chain (bare flag, no value) → list mode groups by chain
+  chainId?: string       // --chain <chain_xxxxxxxx> → read a specific chain
+  includeSubagents: boolean
   list: boolean
   all: boolean
   json: boolean
@@ -85,7 +88,9 @@ Search and time filters:
 Output:
   --limit <n>        Max sessions for --list, or max primary insights for content view (default: 50)
   --offset <n>       Skip first n primary insights in content view (newest first)
-  --chain            Include predecessor sessions' insights (merged, newest first)
+  --chain [id]       Without value: in --list mode, group sessions by chain.
+                     With chain_xxxxxxxx value: read insights for a specific chain.
+  --include-subagents With chain queries, include subagent sessions (default: main only).
   --json             Output as JSON
   --help             Show this help
 
@@ -123,8 +128,11 @@ Examples:
   # Search within one session's primary insights
   session-dashboard insights --session a1b2 --grep "pagination"
 
-  # Read with predecessor chain
-  session-dashboard insights --session a1b2 --chain --limit 50
+  # List sessions grouped by chain
+  session-dashboard insights --list --chain --all
+
+  # Read all insights for a specific chain
+  session-dashboard insights --chain chain_a3k7m2pq
 
   # Paginate: get next page
   session-dashboard insights --session a1b2 --limit 30 --offset 30
@@ -137,6 +145,7 @@ function parseArgs(argvInput?: string[]): Args {
     limit: 50,
     offset: 0,
     chain: false,
+    includeSubagents: false,
     list: false,
     all: false,
     json: false,
@@ -173,8 +182,24 @@ function parseArgs(argvInput?: string[]): Args {
       case '--grep':
         args.grep = argv[++i]
         break
-      case '--chain':
-        args.chain = true
+      case '--chain': {
+        const next = argv[i + 1]
+        if (next && !next.startsWith('--')) {
+          // Read-mode: value supplied. Validate format strictly.
+          if (!isChainId(next)) {
+            console.error(`Error: --chain expects a chain id of the form chain_xxxxxxxx (8 chars from the Crockford alphabet), got "${next}"`)
+            process.exit(1)
+          }
+          args.chainId = next
+          i += 1
+        } else {
+          // List-mode bare flag.
+          args.chain = true
+        }
+        break
+      }
+      case '--include-subagents':
+        args.includeSubagents = true
         break
       case '--list':
         args.list = true
@@ -842,6 +867,21 @@ export function main(argvInput?: string[]) {
 
   if (args.all && args.session) {
     console.error('Error: --all cannot be combined with --session. --session is already an explicit selection.')
+    process.exit(1)
+  }
+
+  if (args.chain && !args.list) {
+    console.error('Error: --chain (bare flag) is only valid with --list. Use --chain <id> to read a specific chain.')
+    process.exit(1)
+  }
+
+  if (args.chainId && args.list) {
+    console.error('Error: --chain <id> cannot be combined with --list. Use --chain alone for list mode or --chain <id> for read mode.')
+    process.exit(1)
+  }
+
+  if (args.chainId && args.session) {
+    console.error('Error: --chain <id> cannot be combined with --session. Use --chain <id> for chain read mode or --session <id> for session read mode.')
     process.exit(1)
   }
 
