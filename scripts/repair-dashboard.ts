@@ -33,6 +33,7 @@ function parseArgs() {
   const args = process.argv.slice(2)
   let days = 7
   let dryRun = false
+  let rebuildChains = false
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
@@ -41,8 +42,10 @@ function parseArgs() {
       i += 1
     } else if (arg === '--dry-run') {
       dryRun = true
+    } else if (arg === '--rebuild-chains') {
+      rebuildChains = true
     } else if (arg === '--help') {
-      console.log('Usage: tsx scripts/repair-dashboard.ts [--days N] [--dry-run]')
+      console.log('Usage: tsx scripts/repair-dashboard.ts [--days N] [--dry-run] [--rebuild-chains]')
       process.exit(0)
     }
   }
@@ -51,7 +54,7 @@ function parseArgs() {
     throw new Error(`Invalid --days value: ${days}`)
   }
 
-  return { days, dryRun }
+  return { days, dryRun, rebuildChains }
 }
 
 function parseTimestamp(value: string | null | undefined): number | null {
@@ -206,6 +209,10 @@ type ChainSessionRow = {
  * predecessor from years ago. The JSON summary's `days` field describes the
  * scope of other repair passes; `chainIdsAssigned` always reflects the full
  * table.
+ *
+ * Behavior with `--rebuild-chains`: callers should clear all chain_ids
+ * BEFORE invoking this function (inside the same transaction). The function
+ * itself does not know about the rebuild flag.
  */
 function backfillChainIds(db: Database.Database, dryRun: boolean): { assigned: number } {
   const sessions = db.prepare(`
@@ -257,7 +264,7 @@ function backfillChainIds(db: Database.Database, dryRun: boolean): { assigned: n
 }
 
 function main() {
-  const { days, dryRun } = parseArgs()
+  const { days, dryRun, rebuildChains } = parseArgs()
   const db = new Database(getDbPath())
   const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000
 
@@ -439,9 +446,14 @@ function main() {
   })
 
   const summary = repair()
-  const runBackfill = db.transaction(() => backfillChainIds(db, dryRun))
+  const runBackfill = db.transaction(() => {
+    if (rebuildChains && !dryRun) {
+      db.prepare('UPDATE sessions SET chain_id = \'\'').run()
+    }
+    return backfillChainIds(db, dryRun)
+  })
   const chainResult = runBackfill()
-  console.log(JSON.stringify({ days, dryRun, ...summary, chainIdsAssigned: chainResult.assigned }, null, 2))
+  console.log(JSON.stringify({ days, dryRun, rebuildChains, ...summary, chainIdsAssigned: chainResult.assigned }, null, 2))
   db.close()
 }
 

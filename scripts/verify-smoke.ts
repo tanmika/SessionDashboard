@@ -1658,6 +1658,57 @@ function verifyRepairBackfillsChainIds(tempRoot: string) {
   console.log('verify: repair backfills chain ids')
 }
 
+function verifyRepairRebuildsChainIds(tempRoot: string) {
+  const tempHome = join(tempRoot, 'chain-rebuild-home')
+  const dataDir = join(tempHome, 'data')
+  mkdirSync(dataDir, { recursive: true })
+  const dbPath = join(dataDir, 'dashboard.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+
+  // Same A→B→C chain as the backfill test.
+  insertSession(db, 'chain-a', { cwd: '/tmp/r', transcriptPath: '', source: 'claude' })
+  insertSession(db, 'chain-b', { cwd: '/tmp/r', transcriptPath: '', source: 'claude', predecessorId: 'chain-a' })
+  insertSession(db, 'chain-c', { cwd: '/tmp/r', transcriptPath: '', source: 'claude', predecessorId: 'chain-b' })
+
+  // Poison the chain_ids: assign DIFFERENT (and alphabet-valid) chain_ids to
+  // each row, simulating a corrupted state. The point is they all DIFFER from
+  // each other AND from what a correct backfill would produce.
+  //
+  // IMPORTANT: every fixture chain_id MUST satisfy the Crockford alphabet
+  // /^chain_[abcdefghjkmnpqrstvwxyz0-9]{8}$/ — NO i/l/o/u. The plan document
+  // has a stale example using "chain_wrongA1" which contains forbidden
+  // characters 'o' and 'A'. Use alphabet-valid placeholders instead, e.g.:
+  //   chain_zzzaaaa1, chain_zzzbbbb2, chain_zzzcccc3
+  // Verify with: new RegExp('^chain_[abcdefghjkmnpqrstvwxyz0-9]{8}$').test(...)
+  db.prepare('UPDATE sessions SET chain_id = ? WHERE session_id = ?').run('chain_zzzaaaa1', 'chain-a')
+  db.prepare('UPDATE sessions SET chain_id = ? WHERE session_id = ?').run('chain_zzzbbbb2', 'chain-b')
+  db.prepare('UPDATE sessions SET chain_id = ? WHERE session_id = ?').run('chain_zzzcccc3', 'chain-c')
+  db.close()
+
+  runCommand('node', ['scripts/repair-dashboard.js', '--rebuild-chains', '--days', '3650'], {
+    env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome },
+  })
+
+  const repaired = new Database(dbPath, { readonly: true })
+  try {
+    const rows = repaired.prepare(
+      'SELECT chain_id FROM sessions WHERE session_id IN (?, ?, ?)'
+    ).all('chain-a', 'chain-b', 'chain-c') as Array<{ chain_id: string }>
+    const unique = new Set(rows.map((r) => r.chain_id))
+    assert.equal(unique.size, 1, `rebuild should collapse chain to one chain_id, got: ${[...unique].join(',')}`)
+
+    const collapsed = [...unique][0]
+    assert(!['chain_zzzaaaa1', 'chain_zzzbbbb2', 'chain_zzzcccc3'].includes(collapsed),
+      `rebuild should discard poisoned chain_ids, got: ${collapsed}`)
+    assert.match(collapsed, /^chain_[abcdefghjkmnpqrstvwxyz0-9]{8}$/,
+      `rebuild result should match Crockford alphabet, got: ${collapsed}`)
+  } finally {
+    repaired.close()
+  }
+  console.log('verify: repair rebuilds chain ids')
+}
+
 async function verifyTranscriptRebind(tempRoot: string) {
   const transcriptDir = join(tempRoot, 'transcripts')
   mkdirSync(transcriptDir, { recursive: true })
@@ -1938,6 +1989,7 @@ async function main() {
     verifyInsightTimestampActivity(tempRoot)
     verifyRepairScript(tempRoot)
     verifyRepairBackfillsChainIds(tempRoot)
+    verifyRepairRebuildsChainIds(tempRoot)
     await verifyTranscriptRebind(tempRoot)
     console.log('verify: smoke checks passed')
   } finally {
