@@ -156,13 +156,17 @@ function insertSession(
     transcriptPath: string
     source: 'claude' | 'codex'
     predecessorId?: string
+    chainId?: string
+    isSubagent?: boolean
+    parentSessionId?: string
   }
 ) {
   const now = new Date().toISOString()
   db.prepare(`
     INSERT INTO sessions (
-      session_id, cwd, transcript_path, state, last_activity, created_at, pinned, alias, source, predecessor_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      session_id, cwd, transcript_path, state, last_activity, created_at, pinned, alias, source,
+      predecessor_id, chain_id, is_subagent, parent_session_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     sessionId,
     options.cwd,
@@ -173,7 +177,10 @@ function insertSession(
     0,
     '',
     options.source,
-    options.predecessorId || ''
+    options.predecessorId || '',
+    options.chainId || '',
+    options.isSubagent ? 1 : 0,
+    options.parentSessionId || ''
   )
 }
 
