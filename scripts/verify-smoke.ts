@@ -1675,12 +1675,73 @@ function verifyChainIdGenerator() {
   console.log('verify: chain id generator')
 }
 
+function verifyChainIdAssignedOnInsert(tempRoot: string) {
+  const dbPath = join(tempRoot, 'chain-assign.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+  const manager = new SessionManager(db)
+  try {
+    // Fresh main session via the real Claude hook event path — this exercises
+    // SessionManager.handleEvent → createSession → stmtInsertSession.
+    manager.handleEvent({
+      session_id: 'fresh-session',
+      hook_event_name: 'SessionStart',
+      cwd: '/tmp/chain-assign-fresh',
+      transcript_path: '',
+      timestamp: '2026-05-12T10:00:00.000Z',
+    } as any)
+
+    const row = db.prepare('SELECT chain_id, predecessor_id FROM sessions WHERE session_id = ?')
+      .get('fresh-session') as { chain_id: string; predecessor_id: string } | undefined
+    assert(row, 'session was not created')
+    assert.equal(row.predecessor_id, '', 'main session should have no predecessor')
+    assert.match(row.chain_id, /^chain_[abcdefghjkmnpqrstvwxyz0-9]{8}$/, `bad chain_id "${row.chain_id}"`)
+
+    const freshSession = manager.getSession('fresh-session')
+    assert(freshSession, 'in-memory session missing after handleEvent')
+    assert.equal(freshSession.chain_id, row.chain_id, 'in-memory chain_id should match DB')
+
+    // Subagent created via the Codex discovery path — parent already exists in
+    // memory, so its chain_id must be propagated to the child at insert time.
+    manager.handleEvent({
+      session_id: 'parent-main',
+      hook_event_name: 'SessionStart',
+      cwd: '/tmp/chain-assign-parent',
+      transcript_path: '',
+      timestamp: '2026-05-12T10:05:00.000Z',
+    } as any)
+    const parent = manager.getSession('parent-main')
+    assert(parent?.chain_id, 'parent should have chain_id')
+    const parentChainId = parent.chain_id
+
+    ;(manager as any).handleCodexSessionDiscovered(
+      'subagent-child',
+      '/tmp/chain-assign-sub',
+      '',
+      '/tmp/chain-assign-sub.jsonl',
+      '2026-05-12T10:06:00.000Z',
+      { isSubagent: true, parentSessionId: 'parent-main' },
+    )
+    const childRow = db.prepare('SELECT chain_id, parent_session_id, is_subagent FROM sessions WHERE session_id = ?')
+      .get('subagent-child') as { chain_id: string; parent_session_id: string; is_subagent: number } | undefined
+    assert(childRow, 'subagent session was not created')
+    assert.equal(childRow.parent_session_id, 'parent-main')
+    assert.equal(childRow.is_subagent, 1)
+    assert.equal(childRow.chain_id, parentChainId, 'subagent should inherit parent chain_id at insert time')
+  } finally {
+    manager.destroy()
+    db.close()
+  }
+  console.log('verify: chain id assigned on insert')
+}
+
 async function main() {
   const tempRoot = mkdtempSync(join(tmpdir(), 'session-dashboard-smoke-'))
   try {
     verifyPackageManifest(tempRoot)
     verifyChainColumn(tempRoot)
     verifyChainIdGenerator()
+    verifyChainIdAssignedOnInsert(tempRoot)
     verifyBuiltCli()
     verifyRuntimeDefaults()
     verifyServicePlist(tempRoot)

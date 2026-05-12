@@ -12,6 +12,7 @@ import type {
 import { IDLE_THRESHOLD_MS, CODEX_ENDED_THRESHOLD_MS, STATE_PRIORITY } from '../../shared/types.js'
 import { TranscriptWatcher } from './transcript-watcher.js'
 import { CodexWatcher, CODEX_SESSIONS_DIR, readCodexSessionMetadata } from './codex-watcher.js'
+import { generateChainId } from '../../shared/chain-id.js'
 
 // Events that signal real progress (can clear waiting state)
 const PROGRESS_EVENTS = new Set([
@@ -50,6 +51,7 @@ export class SessionManager {
   private stmtGetEventsPaged: Database.Statement
   private stmtGetEventsCount: Database.Statement
   private stmtCheckInsightExists: Database.Statement
+  private stmtLookupChainId: Database.Statement
 
   constructor(private db: Database.Database) {
     this.transcriptWatcher = new TranscriptWatcher(
@@ -60,9 +62,9 @@ export class SessionManager {
     // Prepare statements
     this.stmtInsertSession = db.prepare(`
       INSERT OR IGNORE INTO sessions (
-        session_id, cwd, transcript_path, state, last_activity, created_at, source, is_subagent, parent_session_id
+        session_id, cwd, transcript_path, state, last_activity, created_at, source, is_subagent, parent_session_id, chain_id
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     this.stmtUpdateSession = db.prepare(`
       UPDATE sessions SET state = ?, last_activity = ?, cwd = ?, transcript_path = ?, is_subagent = ?, parent_session_id = ?
@@ -108,6 +110,9 @@ export class SessionManager {
     )
     this.stmtCheckInsightExists = db.prepare(
       'SELECT 1 FROM insights WHERE session_id = ? AND content = ? AND source = ? LIMIT 1'
+    )
+    this.stmtLookupChainId = db.prepare(
+      'SELECT chain_id FROM sessions WHERE session_id = ?'
     )
 
     this.restoreFromDb()
@@ -175,6 +180,7 @@ export class SessionManager {
         is_subagent: restoredThreadMeta.isSubagent,
         parent_session_id: restoredThreadMeta.parentSessionId,
         predecessor_id: row.predecessor_id || undefined,
+        chain_id: row.chain_id || undefined,
         insights,
         total_insights: countRow.count,
         active_tools: 0,
@@ -644,6 +650,12 @@ export class SessionManager {
     source: 'claude' | 'codex' = 'claude',
     metadata?: { isSubagent?: boolean, parentSessionId?: string }
   ): Session {
+    const parentChainId = metadata?.parentSessionId
+      ? (this.sessions.get(metadata.parentSessionId)?.chain_id ||
+         this.lookupParentChainIdFromDb(metadata.parentSessionId))
+      : undefined
+    const chainId = parentChainId || generateChainId()
+
     const session: Session = {
       session_id: sessionId,
       display_name: this.makeDisplayName(cwd, sessionId),
@@ -657,6 +669,7 @@ export class SessionManager {
       source,
       is_subagent: metadata?.isSubagent === true,
       parent_session_id: metadata?.parentSessionId,
+      chain_id: chainId,
       insights: [],
       total_insights: 0,
       active_tools: 0,
@@ -673,6 +686,7 @@ export class SessionManager {
       source,
       session.is_subagent ? 1 : 0,
       session.parent_session_id || '',
+      chainId,
     )
 
     this.sessions.set(sessionId, session)
@@ -683,6 +697,11 @@ export class SessionManager {
     }
 
     return session
+  }
+
+  private lookupParentChainIdFromDb(parentId: string): string | undefined {
+    const row = this.stmtLookupChainId.get(parentId) as { chain_id?: string } | undefined
+    return row?.chain_id || undefined
   }
 
   private insertEventIfNew(
