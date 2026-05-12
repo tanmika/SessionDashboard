@@ -1,0 +1,1047 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Dashboard — 树形侧栏 + 卡片看板 + 悬浮预览</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  height: 100vh;
+  background: #0b1020;
+  color: #edf2ff;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+}
+
+:root {
+  --sidebar-bg: rgba(10, 14, 28, 0.98);
+  --sidebar-w: 280px;
+  --border: rgba(255,255,255,0.07);
+  --muted: #9ba7c6;
+  --accent: #7c9cff;
+  --text: #edf2ff;
+  --green: #5eead4;
+  --orange: #f59e0b;
+  --red: #ef4444;
+  --item-hover: rgba(255,255,255,0.04);
+  --item-active: rgba(124,156,255,0.1);
+  --panel: rgba(16, 22, 45, 0.88);
+  --panel-2: rgba(20, 27, 55, 0.96);
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+  --column-width: 340px;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 99px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ─── App Layout ─── */
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+/* ═══════════════════════════════════════════ */
+/* Sidebar                                     */
+/* ═══════════════════════════════════════════ */
+.sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+}
+
+.sb-header {
+  padding: 14px 14px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+.sb-title { font-size: 13px; font-weight: 700; }
+.sb-count { font-size: 11px; color: var(--muted); opacity: 0.6; }
+
+.sb-search-wrap {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.sb-search {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.03);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+.sb-search::placeholder { color: rgba(155,167,198,0.4); }
+.sb-search:focus { border-color: rgba(124,156,255,0.3); }
+
+.sb-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+/* Dot */
+.dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+.dot.active { background: var(--green); box-shadow: 0 0 6px rgba(94,234,212,0.4); }
+.dot.idle { background: #64748b; }
+.dot.ended { background: rgba(255,255,255,0.15); }
+.dot.waiting_user { background: var(--orange); }
+.dot.waiting_permission { background: var(--red); }
+.dot.inactive { background: rgba(148,163,184,0.5); }
+
+.src-badge {
+  font-size: 9px; padding: 1px 5px; border-radius: 99px; font-weight: 700;
+  letter-spacing: 0.02em; flex-shrink: 0;
+}
+.src-badge.claude { background: rgba(96,165,250,0.15); color: #93c5fd; }
+.src-badge.codex { background: rgba(74,222,128,0.15); color: #86efac; }
+
+/* ─── Folder ─── */
+.tree-folder-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px 4px 0;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  transition: background 0.1s;
+  border-radius: 4px;
+}
+.tree-folder-header:hover { background: var(--item-hover); }
+
+.tree-arrow {
+  width: 16px; text-align: center; font-size: 9px; opacity: 0.4;
+  transition: transform 0.15s; flex-shrink: 0;
+}
+.tree-arrow.open { transform: rotate(90deg); }
+.tree-folder-icon { font-size: 12px; flex-shrink: 0; opacity: 0.5; }
+.tree-folder-name {
+  flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; font-weight: 600;
+}
+.tree-folder-count { font-size: 10px; color: var(--muted); opacity: 0.4; flex-shrink: 0; }
+.tree-folder-children.collapsed { display: none; }
+
+/* Folder indent */
+.fi-0 .tree-folder-header { padding-left: 6px; }
+.fi-1 .tree-folder-header { padding-left: 18px; }
+.fi-2 .tree-folder-header { padding-left: 30px; }
+.fi-3 .tree-folder-header { padding-left: 42px; }
+
+/* ─── Session leaf ─── */
+.tree-session {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-left: 2px solid transparent;
+  position: relative;
+}
+.tree-session:hover { background: var(--item-hover); }
+.tree-session.selected {
+  background: var(--item-active);
+  border-left-color: var(--accent);
+}
+
+.si-1 { padding-left: 22px; }
+.si-2 { padding-left: 34px; }
+.si-3 { padding-left: 46px; }
+
+.tree-session-info {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.tree-session-name {
+  font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tree-session-meta {
+  font-size: 10px; color: var(--muted); opacity: 0.6;
+  display: flex; gap: 6px; align-items: center;
+}
+.tree-session-right {
+  flex-shrink: 0; display: flex; align-items: center; gap: 6px;
+}
+.tree-session-count { font-size: 10px; color: var(--muted); opacity: 0.4; }
+
+/* Pin button in sidebar */
+.pin-btn {
+  width: 20px; height: 20px; border-radius: 4px;
+  border: none; background: none; color: var(--muted);
+  font-size: 11px; cursor: pointer; opacity: 0;
+  transition: all 0.1s; display: flex; align-items: center; justify-content: center;
+}
+.tree-session:hover .pin-btn { opacity: 0.5; }
+.pin-btn:hover { opacity: 1 !important; background: rgba(124,156,255,0.15); color: var(--accent); }
+.pin-btn.pinned { opacity: 0.8; color: var(--accent); }
+.tree-session:hover .pin-btn.pinned { opacity: 1; }
+
+/* ═══════════════════════════════════════════ */
+/* Main Area                                   */
+/* ═══════════════════════════════════════════ */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top left, rgba(124,156,255,0.10), transparent 30%),
+    radial-gradient(circle at top right, rgba(94,234,212,0.06), transparent 24%),
+    linear-gradient(180deg, #0a0f1d 0%, #0b1020 100%);
+}
+
+/* Top bar */
+.main-topbar {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+}
+.main-topbar h1 { font-size: 15px; font-weight: 700; }
+.main-stats {
+  display: flex; gap: 16px; font-size: 12px; color: var(--muted);
+}
+.main-stats .val { color: var(--text); font-weight: 600; }
+
+/* Stats bar */
+.stats-bar {
+  padding: 10px 20px;
+  display: flex;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.stat-chip {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 8px;
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05);
+  font-size: 12px; color: var(--muted);
+}
+.stat-chip .val { font-weight: 600; color: var(--text); }
+
+/* ─── Board: horizontal scrollable cards ─── */
+.board {
+  flex: 1;
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 16px 20px 12px;
+  scroll-snap-type: x proximity;
+}
+
+/* Card */
+.card {
+  width: var(--column-width);
+  min-width: var(--column-width);
+  height: 100%;
+  background: linear-gradient(180deg, rgba(16,22,45,0.98), rgba(12,17,34,0.94));
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  scroll-snap-align: start;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+.card:hover { border-color: rgba(255,255,255,0.15); }
+.card.selected { border-color: var(--accent); }
+
+.card-header {
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0));
+}
+.card-topline {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 10px; margin-bottom: 8px;
+}
+.card-title-area { flex: 1; min-width: 0; }
+.card-name {
+  font-size: 15px; font-weight: 700;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+.card-sub {
+  font-size: 11px; color: var(--muted); font-family: monospace;
+}
+.card-badges {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0;
+}
+
+/* Status badges (reused from original) */
+.status {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; border: 1px solid transparent;
+  white-space: nowrap;
+}
+.status.active { background: rgba(94,234,212,0.14); color: #b8fff4; border-color: rgba(94,234,212,0.26); }
+.status.idle { background: rgba(100,116,139,0.18); color: #d6deed; border-color: rgba(148,163,184,0.22); }
+.status.ended { background: rgba(148,163,184,0.14); color: #dbe5f3; border-color: rgba(148,163,184,0.24); }
+.status.waiting_user { background: rgba(245,158,11,0.14); color: #ffd38a; border-color: rgba(245,158,11,0.32); }
+
+.card-meta {
+  display: flex; gap: 8px; font-size: 11px; color: var(--muted); align-items: center;
+}
+
+/* Card insight list */
+.card-insights {
+  flex: 1; overflow-y: auto; padding: 12px 12px 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.card-insight {
+  padding: 10px 12px; border-radius: 12px;
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+}
+.card-insight-head {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 8px; margin-bottom: 6px;
+}
+.card-insight-tag {
+  font-size: 10px; padding: 3px 7px; border-radius: 99px;
+  background: rgba(124,156,255,0.14); color: #cad7ff; border: 1px solid rgba(124,156,255,0.24);
+}
+.card-insight-time { font-size: 10px; color: var(--muted); }
+.card-insight-body { font-size: 13px; line-height: 1.55; color: #e7ecfa; }
+
+.card-insight.user-prompt {
+  background: rgba(255,180,50,0.06); border-color: rgba(255,180,50,0.15);
+}
+.card-insight.user-prompt .card-insight-tag {
+  background: rgba(255,180,50,0.15); color: #ffd38a; border-color: rgba(255,180,50,0.25);
+}
+
+/* Empty board message */
+.board-empty {
+  width: 100%; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  color: var(--muted); background: var(--panel);
+  border: 1px dashed var(--border); border-radius: 16px;
+}
+.board-empty p { margin: 4px 0; }
+.board-empty .hint { font-size: 12px; opacity: 0.5; }
+
+/* ═══════════════════════════════════════════ */
+/* Hover Preview Card                          */
+/* ═══════════════════════════════════════════ */
+.hover-preview {
+  position: fixed;
+  width: 340px; max-height: 360px;
+  background: rgba(16, 22, 50, 0.98);
+  border: 1px solid rgba(124,156,255,0.2);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(124,156,255,0.08);
+  backdrop-filter: blur(20px);
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0; transform: translateX(-4px);
+  transition: opacity 0.15s, transform 0.15s;
+  z-index: 9999;
+}
+.hover-preview.visible { opacity: 1; transform: translateX(0); }
+
+.hp-header {
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  background: rgba(255,255,255,0.02);
+}
+.hp-title {
+  font-size: 13px; font-weight: 700; margin-bottom: 4px;
+  display: flex; align-items: center; gap: 8px;
+}
+.hp-id { font-size: 10px; font-family: monospace; color: var(--muted); opacity: 0.5; }
+.hp-meta-row {
+  display: flex; gap: 10px; align-items: center;
+  font-size: 11px; color: var(--muted); margin-top: 5px;
+}
+.hp-state {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 7px; border-radius: 99px; font-size: 10px; font-weight: 600;
+}
+.hp-state.active { background: rgba(94,234,212,0.12); color: #b8fff4; }
+.hp-state.idle { background: rgba(100,116,139,0.18); color: #d6deed; }
+.hp-state.ended { background: rgba(148,163,184,0.14); color: #dbe5f3; }
+
+.hp-insights {
+  padding: 10px 14px; overflow-y: auto; max-height: 230px;
+}
+.hp-label {
+  font-size: 10px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; opacity: 0.5;
+}
+.hp-item {
+  font-size: 12px; line-height: 1.5; color: #c8d5ff;
+  padding: 7px 9px; background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; margin-bottom: 5px;
+}
+.hp-item-time { font-size: 10px; color: var(--muted); opacity: 0.5; margin-bottom: 3px; }
+.hp-user {
+  font-size: 12px; color: var(--muted); padding: 5px 9px;
+  background: rgba(255,180,50,0.05); border: 1px solid rgba(255,180,50,0.1);
+  border-radius: 8px; margin-bottom: 5px; font-style: italic;
+}
+.hp-cwd {
+  padding: 6px 14px 8px; font-size: 10px; color: var(--muted); opacity: 0.4;
+  border-top: 1px solid rgba(255,255,255,0.04); font-family: monospace;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ═══════════════════════════════════════════ */
+/* Detail Panel (overlay)                      */
+/* ═══════════════════════════════════════════ */
+.detail-overlay {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: 420px;
+  background: var(--panel-2);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 32px rgba(0,0,0,0.3);
+  z-index: 100;
+  overflow-y: auto;
+  transform: translateX(100%);
+  transition: transform 0.2s ease;
+  padding: 20px;
+}
+.detail-overlay.open { transform: translateX(0); }
+.detail-close {
+  position: absolute; top: 12px; right: 12px;
+  background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+  color: var(--muted); border-radius: 6px; width: 28px; height: 28px;
+  cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center;
+}
+.detail-close:hover { color: var(--text); background: rgba(255,255,255,0.1); }
+.detail-title { font-size: 17px; font-weight: 700; margin-bottom: 6px; padding-right: 36px; }
+.detail-meta {
+  display: flex; gap: 12px; font-size: 12px; color: var(--muted); flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.detail-section-title {
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px;
+}
+.detail-insight {
+  padding: 12px; background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 12px; margin-bottom: 8px; font-size: 13px; line-height: 1.6;
+}
+.detail-insight-head {
+  display: flex; justify-content: space-between; margin-bottom: 6px;
+  font-size: 11px; color: var(--muted);
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ═══════════ Sidebar ═══════════ -->
+  <div class="sidebar">
+    <div class="sb-header">
+      <span class="sb-title">Sessions</span>
+      <span class="sb-count">54</span>
+    </div>
+    <div class="sb-search-wrap">
+      <input class="sb-search" placeholder="🔍 搜索 session / 项目…" />
+    </div>
+    <div class="sb-list">
+
+      <!-- WebProject -->
+      <div class="tree-folder fi-0">
+        <div class="tree-folder-header">
+          <span class="tree-arrow open">▶</span>
+          <span class="tree-folder-icon">📁</span>
+          <span class="tree-folder-name">WebProject</span>
+          <span class="tree-folder-count">12</span>
+        </div>
+        <div class="tree-folder-children">
+
+          <div class="tree-folder fi-1">
+            <div class="tree-folder-header">
+              <span class="tree-arrow open">▶</span>
+              <span class="tree-folder-icon">📂</span>
+              <span class="tree-folder-name">session-dashboard</span>
+              <span class="tree-folder-count">10</span>
+            </div>
+            <div class="tree-folder-children">
+              <div class="tree-session si-2 selected" data-preview="sd-claude" data-pinned="true">
+                <span class="dot active"></span>
+                <span class="src-badge claude">Claude</span>
+                <div class="tree-session-info">
+                  <span class="tree-session-name">UI 优化改造</span>
+                  <span class="tree-session-meta">7068ea · 1m</span>
+                </div>
+                <div class="tree-session-right">
+                  <span class="tree-session-count">140✦</span>
+                  <button class="pin-btn pinned" title="从看板移除">📌</button>
+                </div>
+              </div>
+
+              <div class="tree-session si-2" data-preview="sd-codex" data-pinned="true">
+                <span class="dot ended"></span>
+                <span class="src-badge codex">Codex</span>
+                <div class="tree-session-info">
+                  <span class="tree-session-name">CLI 修复</span>
+                  <span class="tree-session-meta">019cf4 · 42m</span>
+                </div>
+                <div class="tree-session-right">
+                  <span class="tree-session-count">51✦</span>
+                  <button class="pin-btn pinned" title="从看板移除">📌</button>
+                </div>
+              </div>
+
+              <div class="tree-session si-2" data-preview="sd-old">
+                <span class="dot ended"></span>
+                <span class="src-badge claude">Claude</span>
+                <div class="tree-session-info">
+                  <span class="tree-session-name">npm 包分发</span>
+                  <span class="tree-session-meta">019ce1 · 3d</span>
+                </div>
+                <div class="tree-session-right">
+                  <span class="tree-session-count">255✦</span>
+                  <button class="pin-btn" title="加入看板">📌</button>
+                </div>
+              </div>
+
+              <div class="tree-session si-2">
+                <span class="dot ended"></span>
+                <span class="src-badge claude">Claude</span>
+                <div class="tree-session-info">
+                  <span class="tree-session-name">e12d01</span>
+                  <span class="tree-session-meta">e12d01 · 5d</span>
+                </div>
+                <div class="tree-session-right">
+                  <span class="tree-session-count">255✦</span>
+                  <button class="pin-btn" title="加入看板">📌</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tree-folder fi-1">
+            <div class="tree-folder-header">
+              <span class="tree-arrow">▶</span>
+              <span class="tree-folder-icon">📁</span>
+              <span class="tree-folder-name">TanmiWorkspace</span>
+              <span class="tree-folder-count">1</span>
+            </div>
+            <div class="tree-folder-children collapsed"></div>
+          </div>
+
+          <div class="tree-folder fi-1">
+            <div class="tree-folder-header">
+              <span class="tree-arrow">▶</span>
+              <span class="tree-folder-icon">📁</span>
+              <span class="tree-folder-name">bili-inspector</span>
+              <span class="tree-folder-count">1</span>
+            </div>
+            <div class="tree-folder-children collapsed"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- PixCake -->
+      <div class="tree-folder fi-0">
+        <div class="tree-folder-header">
+          <span class="tree-arrow open">▶</span>
+          <span class="tree-folder-icon">📁</span>
+          <span class="tree-folder-name">PixCake</span>
+          <span class="tree-folder-count">19</span>
+        </div>
+        <div class="tree-folder-children">
+
+          <div class="tree-folder fi-1">
+            <div class="tree-folder-header">
+              <span class="tree-arrow open">▶</span>
+              <span class="tree-folder-icon">📂</span>
+              <span class="tree-folder-name">InstantApp</span>
+              <span class="tree-folder-count">7</span>
+            </div>
+            <div class="tree-folder-children">
+              <div class="tree-session si-2" data-preview="instant-1" data-pinned="true">
+                <span class="dot idle"></span>
+                <span class="src-badge claude">Claude</span>
+                <div class="tree-session-info">
+                  <span class="tree-session-name">预设流程梳理</span>
+                  <span class="tree-session-meta">e5b506 · 13m</span>
+                </div>
+                <div class="tree-session-right">
+                  <span class="tree-session-count">88✦</span>
+                  <button class="pin-btn pinned" title="从看板移除">📌</button>
+                </div>
+              </div>
+
+              <div class="tree-session si-2" data-preview="instant-2">
+                <span class="dot ended"></span>
+                <span class="src-badge codex">Codex</span>
+                <div class="tree-session-info">
+                  <span class="tree-session-name">019cf4</span>
+                  <span class="tree-session-meta">019cf4 · 2h</span>
+                </div>
+                <div class="tree-session-right">
+                  <span class="tree-session-count">2✦</span>
+                  <button class="pin-btn" title="加入看板">📌</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tree-folder fi-1">
+            <div class="tree-folder-header">
+              <span class="tree-arrow open">▶</span>
+              <span class="tree-folder-icon">📂</span>
+              <span class="tree-folder-name">PixWeb-GraphicsMagick2</span>
+              <span class="tree-folder-count">5</span>
+            </div>
+            <div class="tree-folder-children">
+              <div class="tree-session si-2" data-preview="pix-codex" data-pinned="true">
+                <span class="dot idle"></span>
+                <span class="src-badge codex">Codex</span>
+                <div class="tree-session-info">
+                  <span class="tree-session-name">LensBlur 联调</span>
+                  <span class="tree-session-meta">019cf4 · 26m</span>
+                </div>
+                <div class="tree-session-right">
+                  <span class="tree-session-count">42✦</span>
+                  <button class="pin-btn pinned" title="从看板移除">📌</button>
+                </div>
+              </div>
+
+              <div class="tree-session si-2">
+                <span class="dot ended"></span>
+                <span class="src-badge claude">Claude</span>
+                <div class="tree-session-info">
+                  <span class="tree-session-name">WASM 适配</span>
+                  <span class="tree-session-meta">e12d01 · 3d</span>
+                </div>
+                <div class="tree-session-right">
+                  <span class="tree-session-count">255✦</span>
+                  <button class="pin-btn" title="加入看板">📌</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tree-folder fi-1">
+            <div class="tree-folder-header">
+              <span class="tree-arrow">▶</span>
+              <span class="tree-folder-icon">📁</span>
+              <span class="tree-folder-name">PixCook2</span>
+              <span class="tree-folder-count">2</span>
+            </div>
+            <div class="tree-folder-children collapsed"></div>
+          </div>
+
+          <div class="tree-folder fi-1">
+            <div class="tree-folder-header">
+              <span class="tree-arrow">▶</span>
+              <span class="tree-folder-icon">📁</span>
+              <span class="tree-folder-name">tsinpaint</span>
+              <span class="tree-folder-count">1</span>
+            </div>
+            <div class="tree-folder-children collapsed"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Design -->
+      <div class="tree-folder fi-0">
+        <div class="tree-folder-header">
+          <span class="tree-arrow">▶</span>
+          <span class="tree-folder-icon">📁</span>
+          <span class="tree-folder-name">Design</span>
+          <span class="tree-folder-count">6</span>
+        </div>
+        <div class="tree-folder-children collapsed"></div>
+      </div>
+
+      <!-- Home -->
+      <div class="tree-folder fi-0">
+        <div class="tree-folder-header">
+          <span class="tree-arrow">▶</span>
+          <span class="tree-folder-icon">🏠</span>
+          <span class="tree-folder-name">~ (home)</span>
+          <span class="tree-folder-count">12</span>
+        </div>
+        <div class="tree-folder-children collapsed"></div>
+      </div>
+
+      <!-- /tmp -->
+      <div class="tree-folder fi-0">
+        <div class="tree-folder-header">
+          <span class="tree-arrow">▶</span>
+          <span class="tree-folder-icon">🗂</span>
+          <span class="tree-folder-name">/tmp</span>
+          <span class="tree-folder-count">3</span>
+        </div>
+        <div class="tree-folder-children collapsed"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══════════ Main ═══════════ -->
+  <div class="main">
+    <div class="main-topbar">
+      <h1>Session Dashboard</h1>
+      <div class="main-stats">
+        <span>Active <span class="val">2</span></span>
+        <span>Idle <span class="val">7</span></span>
+        <span>Pinned <span class="val">4</span></span>
+      </div>
+    </div>
+
+    <div class="stats-bar">
+      <div class="stat-chip"><span class="dot active"></span> Active <span class="val">2</span></div>
+      <div class="stat-chip"><span class="dot waiting_user"></span> Waiting <span class="val">1</span></div>
+      <div class="stat-chip"><span class="dot idle"></span> Idle <span class="val">7</span></div>
+      <div class="stat-chip"><span class="dot ended"></span> Ended <span class="val">44</span></div>
+    </div>
+
+    <!-- Board: pinned sessions as cards -->
+    <div class="board">
+
+      <!-- Card 1 -->
+      <div class="card selected">
+        <div class="card-header">
+          <div class="card-topline">
+            <div class="card-title-area">
+              <div class="card-name">session-dashboard</div>
+              <div class="card-sub">7068ea · Claude</div>
+            </div>
+            <div class="card-badges">
+              <span class="src-badge claude">Claude</span>
+              <span class="status active"><span class="dot active"></span> Active</span>
+            </div>
+          </div>
+          <div class="card-meta">
+            <span>1 min ago</span>
+            <span>·</span>
+            <span>140 insights</span>
+          </div>
+        </div>
+        <div class="card-insights">
+          <div class="card-insight">
+            <div class="card-insight-head">
+              <span class="card-insight-tag">Latest</span>
+              <span class="card-insight-time">1m</span>
+            </div>
+            <div class="card-insight-body">用户的两个想法可以组合：C 的项目树形结构作为骨架，B 的内容预览作为悬浮卡片。</div>
+          </div>
+          <div class="card-insight user-prompt">
+            <div class="card-insight-head">
+              <span class="card-insight-tag">User</span>
+              <span class="card-insight-time">3m</span>
+            </div>
+            <div class="card-insight-body">强化一下语气，我们改模版然后重新安装</div>
+          </div>
+          <div class="card-insight">
+            <div class="card-insight-head">
+              <span class="card-insight-tag">Insight</span>
+              <span class="card-insight-time">25m</span>
+            </div>
+            <div class="card-insight-body">Codex 压缩后行为审查 — SessionStart hook 不重触发，insight recovery 未自动执行。</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2 -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-topline">
+            <div class="card-title-area">
+              <div class="card-name">session-dashboard</div>
+              <div class="card-sub">019cf4 · Codex</div>
+            </div>
+            <div class="card-badges">
+              <span class="src-badge codex">Codex</span>
+              <span class="status ended"><span class="dot ended"></span> Ended</span>
+            </div>
+          </div>
+          <div class="card-meta">
+            <span>42 min ago</span>
+            <span>·</span>
+            <span>51 insights</span>
+          </div>
+        </div>
+        <div class="card-insights">
+          <div class="card-insight">
+            <div class="card-insight-head">
+              <span class="card-insight-tag">Latest</span>
+              <span class="card-insight-time">42m</span>
+            </div>
+            <div class="card-insight-body">验证通过了。CLI 已能输出 order: newest first，按主 insight 计数。</div>
+          </div>
+          <div class="card-insight">
+            <div class="card-insight-head">
+              <span class="card-insight-tag">Insight</span>
+              <span class="card-insight-time">1h</span>
+            </div>
+            <div class="card-insight-body">已提交 d63b3c2，Codex session state handling 统一。</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 3 -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-topline">
+            <div class="card-title-area">
+              <div class="card-name">InstantApp</div>
+              <div class="card-sub">e5b506 · Claude</div>
+            </div>
+            <div class="card-badges">
+              <span class="src-badge claude">Claude</span>
+              <span class="status idle"><span class="dot idle"></span> Idle</span>
+            </div>
+          </div>
+          <div class="card-meta">
+            <span>13 min ago</span>
+            <span>·</span>
+            <span>88 insights</span>
+          </div>
+        </div>
+        <div class="card-insights">
+          <div class="card-insight">
+            <div class="card-insight-head">
+              <span class="card-insight-tag">Latest</span>
+              <span class="card-insight-time">13m</span>
+            </div>
+            <div class="card-insight-body">预设应用流程：PresetSuitConfig → _loadPresetDetails → mergeFromJsonConfigString</div>
+          </div>
+          <div class="card-insight user-prompt">
+            <div class="card-insight-head">
+              <span class="card-insight-tag">User</span>
+              <span class="card-insight-time">15m</span>
+            </div>
+            <div class="card-insight-body">预设完整流程是什么？</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 4 -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-topline">
+            <div class="card-title-area">
+              <div class="card-name">PixWeb-GraphicsMagick2</div>
+              <div class="card-sub">019cf4 · Codex</div>
+            </div>
+            <div class="card-badges">
+              <span class="src-badge codex">Codex</span>
+              <span class="status idle"><span class="dot idle"></span> Idle</span>
+            </div>
+          </div>
+          <div class="card-meta">
+            <span>26 min ago</span>
+            <span>·</span>
+            <span>42 insights</span>
+          </div>
+        </div>
+        <div class="card-insights">
+          <div class="card-insight">
+            <div class="card-insight-head">
+              <span class="card-insight-tag">Latest</span>
+              <span class="card-insight-time">26m</span>
+            </div>
+            <div class="card-insight-body">LensBlur WASM 单线程适配 — Defocus.cpp / DepthRefine.cpp 线程宏判断。</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Hover Preview -->
+<div class="hover-preview" id="hover-preview">
+  <div class="hp-header">
+    <div class="hp-title">
+      <span id="hp-name">—</span>
+      <span class="src-badge claude" id="hp-source">Claude</span>
+    </div>
+    <div id="hp-id" class="hp-id"></div>
+    <div class="hp-meta-row">
+      <span class="hp-state" id="hp-state"></span>
+      <span id="hp-time"></span>
+      <span id="hp-count"></span>
+    </div>
+  </div>
+  <div class="hp-insights" id="hp-insights"></div>
+  <div class="hp-cwd" id="hp-cwd"></div>
+</div>
+
+<!-- Detail overlay -->
+<div class="detail-overlay" id="detail-panel">
+  <button class="detail-close" id="detail-close">✕</button>
+  <div class="detail-title">session-dashboard · <span style="font-weight:400;font-size:14px;color:var(--muted)">UI 优化改造</span></div>
+  <div class="detail-meta">
+    <span><span class="dot active" style="vertical-align:middle;margin-right:4px"></span>Active</span>
+    <span class="src-badge claude">Claude</span>
+    <span style="font-family:monospace;opacity:0.5;font-size:11px">7068eadf</span>
+    <span>140 insights</span>
+  </div>
+  <div class="detail-section-title">Insights</div>
+  <div class="detail-insight">
+    <div class="detail-insight-head"><span>Latest Insight</span><span>1m ago</span></div>
+    用户的两个想法可以组合：C 的项目树形结构作为骨架，B 的内容预览作为悬浮卡片。
+  </div>
+  <div class="detail-insight" style="background:rgba(255,180,50,0.05);border-color:rgba(255,180,50,0.12)">
+    <div class="detail-insight-head"><span style="color:#f5c842">User</span><span>3m ago</span></div>
+    强化一下语气，我们改模版然后重新安装
+  </div>
+  <div class="detail-insight">
+    <div class="detail-insight-head"><span>Insight</span><span>25m ago</span></div>
+    Codex 压缩后行为审查 — SessionStart hook 不重触发，insight recovery 未自动执行。
+  </div>
+</div>
+
+<script>
+// Folder toggle
+document.querySelectorAll('.tree-folder-header').forEach(h => {
+  h.addEventListener('click', () => {
+    h.querySelector('.tree-arrow')?.classList.toggle('open')
+    h.nextElementSibling?.classList.toggle('collapsed')
+  })
+})
+
+// Session click → select in sidebar + open detail panel
+document.querySelectorAll('.tree-session').forEach(item => {
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.tree-session.selected').forEach(el => el.classList.remove('selected'))
+    item.classList.add('selected')
+    document.getElementById('detail-panel').classList.add('open')
+  })
+})
+
+// Close detail
+document.getElementById('detail-close').addEventListener('click', () => {
+  document.getElementById('detail-panel').classList.remove('open')
+})
+
+// Pin button toggle
+document.querySelectorAll('.pin-btn').forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    btn.classList.toggle('pinned')
+  })
+})
+
+// Hover preview
+const preview = document.getElementById('hover-preview')
+let hoverTimeout = null
+
+const previewData = {
+  'sd-claude': {
+    name: 'session-dashboard', source: 'claude', id: '7068eadf-d448',
+    state: 'Active', stateClass: 'active', time: '1m ago', count: '140 insights',
+    cwd: '/Users/tanmika/WebProject/session-dashboard',
+    insights: [
+      { type: 'i', time: '1m', text: '项目树形结构 + 悬浮预览卡片的组合方案。' },
+      { type: 'u', text: '💬 强化一下语气，我们改模版然后重新安装' },
+      { type: 'i', time: '25m', text: 'Codex 压缩后 insight recovery 未自动触发。' },
+    ]
+  },
+  'sd-codex': {
+    name: 'session-dashboard', source: 'codex', id: '019cf4ad-9564',
+    state: 'Ended', stateClass: 'ended', time: '42m ago', count: '51 insights',
+    cwd: '/Users/tanmika/WebProject/session-dashboard',
+    insights: [
+      { type: 'i', time: '42m', text: 'CLI 输出 order: newest first 验证通过。' },
+      { type: 'i', time: '1h', text: '提交 d63b3c2，Codex state handling 统一。' },
+    ]
+  },
+  'sd-old': {
+    name: 'session-dashboard', source: 'claude', id: '019ce1xx',
+    state: 'Ended', stateClass: 'ended', time: '3d ago', count: '255 insights',
+    cwd: '/Users/tanmika/WebProject/session-dashboard',
+    insights: [
+      { type: 'i', time: '3d', text: 'npm 包分发改造全链路打通。' },
+      { type: 'i', time: '3d', text: '用户输入捕获 + 噪音过滤 + 凭证脱敏。' },
+    ]
+  },
+  'instant-1': {
+    name: 'InstantApp', source: 'claude', id: 'e5b50692',
+    state: 'Idle', stateClass: 'idle', time: '13m ago', count: '88 insights',
+    cwd: '/Users/tanmika/PixCake/InstantApp',
+    insights: [
+      { type: 'i', time: '13m', text: '预设流程：PresetSuitConfig → API → mergeFromJsonConfigString。' },
+      { type: 'u', text: '💬 预设完整流程是什么？' },
+    ]
+  },
+  'instant-2': {
+    name: 'InstantApp', source: 'codex', id: '019cf47e',
+    state: 'Ended', stateClass: 'ended', time: '2h ago', count: '2 insights',
+    cwd: '/Users/tanmika/PixCake/InstantApp',
+    insights: [
+      { type: 'i', time: '2h', text: 'Codex session hook 测试。' },
+    ]
+  },
+  'pix-codex': {
+    name: 'PixWeb-GraphicsMagick2', source: 'codex', id: '019cf4b7',
+    state: 'Idle', stateClass: 'idle', time: '26m ago', count: '42 insights',
+    cwd: '/Users/tanmika/PixCake/PixWeb-GraphicsMagick2',
+    insights: [
+      { type: 'i', time: '26m', text: 'LensBlur WASM 单线程适配。' },
+      { type: 'i', time: '1h', text: 'overlay 和性能面板修复。' },
+    ]
+  },
+}
+
+document.querySelectorAll('.tree-session[data-preview]').forEach(item => {
+  item.addEventListener('mouseenter', () => {
+    const data = previewData[item.dataset.preview]
+    if (!data) return
+    clearTimeout(hoverTimeout)
+    hoverTimeout = setTimeout(() => {
+      document.getElementById('hp-name').textContent = data.name
+      const src = document.getElementById('hp-source')
+      src.textContent = data.source === 'codex' ? 'Codex' : 'Claude'
+      src.className = 'src-badge ' + data.source
+      document.getElementById('hp-id').textContent = data.id
+      const st = document.getElementById('hp-state')
+      st.innerHTML = `<span class="dot ${data.stateClass}" style="vertical-align:middle;margin-right:3px"></span>${data.state}`
+      st.className = 'hp-state ' + data.stateClass
+      document.getElementById('hp-time').textContent = data.time
+      document.getElementById('hp-count').textContent = data.count
+      document.getElementById('hp-cwd').textContent = data.cwd
+
+      const ins = document.getElementById('hp-insights')
+      ins.innerHTML = '<div class="hp-label">Recent</div>'
+      data.insights.forEach(i => {
+        if (i.type === 'i') ins.innerHTML += `<div class="hp-item"><div class="hp-item-time">${i.time}</div>${i.text}</div>`
+        else ins.innerHTML += `<div class="hp-user">${i.text}</div>`
+      })
+
+      const rect = item.getBoundingClientRect()
+      const sidebarRight = document.querySelector('.sidebar').getBoundingClientRect().right
+      preview.style.left = (sidebarRight + 8) + 'px'
+      let top = rect.top - 30
+      if (top + 360 > window.innerHeight - 8) top = window.innerHeight - 368
+      if (top < 8) top = 8
+      preview.style.top = top + 'px'
+      preview.classList.add('visible')
+    }, 300)
+  })
+  item.addEventListener('mouseleave', () => {
+    clearTimeout(hoverTimeout)
+    preview.classList.remove('visible')
+  })
+})
+</script>
+
+</body>
+</html>
