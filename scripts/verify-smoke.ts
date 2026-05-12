@@ -775,25 +775,43 @@ function verifyInsightsChainFlagParsing(tempRoot: string) {
   )
 
   // Case E: --list --chain --cwd is now honored (Task 4.4 integrated it).
-  // Should NOT reject with "not yet supported".
+  // Assert (a) exit 0, (b) no rejection stderr, (c) stdout parses as JSON array.
+  // The --json flag is required so a regression to text output is caught by
+  // JSON.parse rather than producing a vacuous "no rejection" pass.
   const cwdNow = spawnNode(
-    [join(repoRoot, 'lib/cli.js'), 'insights', '--list', '--chain', '--cwd', '/tmp/x'],
+    [join(repoRoot, 'lib/cli.js'), 'insights', '--list', '--chain', '--cwd', '/tmp/x', '--json'],
     { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
   )
+  assert.equal(cwdNow.status, 0,
+    `--list --chain --cwd should exit 0, got status ${cwdNow.status}, stderr: ${cwdNow.stderr.slice(0, 200)}`)
   assert(
     !cwdNow.stderr.includes('not yet supported'),
-    `--list --chain --cwd should be honored after Task 4.4, got stderr: ${cwdNow.stderr.slice(0, 200)}`
+    `--list --chain --cwd should no longer be rejected, got stderr: ${cwdNow.stderr.slice(0, 200)}`
   )
+  try {
+    const parsed = JSON.parse(cwdNow.stdout)
+    assert(Array.isArray(parsed), `--list --chain --cwd should emit JSON array, got: ${cwdNow.stdout.slice(0, 200)}`)
+  } catch {
+    assert.fail(`--list --chain --cwd stdout should be valid JSON, got: ${cwdNow.stdout.slice(0, 200)}`)
+  }
 
   // Case F: --list --chain --range is now honored.
   const rangeNow = spawnNode(
-    [join(repoRoot, 'lib/cli.js'), 'insights', '--list', '--chain', '--range', 'week'],
+    [join(repoRoot, 'lib/cli.js'), 'insights', '--list', '--chain', '--range', 'week', '--json'],
     { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
   )
+  assert.equal(rangeNow.status, 0,
+    `--list --chain --range should exit 0, got status ${rangeNow.status}, stderr: ${rangeNow.stderr.slice(0, 200)}`)
   assert(
     !rangeNow.stderr.includes('not yet supported'),
-    `--list --chain --range should be honored after Task 4.4, got stderr: ${rangeNow.stderr.slice(0, 200)}`
+    `--list --chain --range should no longer be rejected, got stderr: ${rangeNow.stderr.slice(0, 200)}`
   )
+  try {
+    const parsed = JSON.parse(rangeNow.stdout)
+    assert(Array.isArray(parsed), `--list --chain --range should emit JSON array, got: ${rangeNow.stdout.slice(0, 200)}`)
+  } catch {
+    assert.fail(`--list --chain --range stdout should be valid JSON, got: ${rangeNow.stdout.slice(0, 200)}`)
+  }
 
   console.log('verify: insights chain flag parsing')
 }
@@ -1012,13 +1030,22 @@ function verifyInsightsListChainScopes(tempRoot: string) {
   const tempHome = join(tempRoot, 'list-chain-scopes-home')
   const dataDir = join(tempHome, 'data')
   mkdirSync(dataDir, { recursive: true })
+  // /tmp/scope-a must exist as a real directory so the Test 5 spawn can use it
+  // as process.cwd(). Node's child process canonicalizes the spawn cwd via
+  // realpath, so on macOS '/tmp/scope-a' becomes '/private/tmp/scope-a' inside
+  // the child. The DB seed for chain A must therefore use the same canonical
+  // form so the default-cwd WHERE clause matches. Production semantics are
+  // unchanged: normalizeCwdArg uses path.resolve (does not follow symlinks);
+  // hooks and the user-facing CLI both record whatever the OS returned.
+  mkdirSync('/tmp/scope-a', { recursive: true })
+  const scopeARealPath = realpathSync('/tmp/scope-a')
   const dbPath = join(dataDir, 'dashboard.db')
   const db = new Database(dbPath)
   applySchema(db)
 
   // Chain A: main session in /tmp/scope-a, recent activity.
   insertSession(db, 'a-main', {
-    cwd: '/tmp/scope-a', transcriptPath: '', source: 'claude',
+    cwd: scopeARealPath, transcriptPath: '', source: 'claude',
     chainId: 'chain_aaaaaa55',
   })
   // Chain B: main session in /tmp/scope-b/nested, recent activity.
@@ -1080,6 +1107,20 @@ function verifyInsightsListChainScopes(tempRoot: string) {
   // Newest chain first (sort by last_activity DESC): chain A is newest.
   assert.equal(limitParsed[0].chain_id, 'chain_aaaaaa55',
     `--limit 1 should return newest chain (A), got ${limitParsed[0].chain_id}`)
+
+  // --- Test 5: default scope (no --cwd, no --all) uses process.cwd() ---
+  // Spawn CLI from /tmp/scope-a so process.cwd() inside the spawned process
+  // matches chain A's session cwd. Default scope should return only chain A.
+  const defaultScopeResult = runCommand('node', [
+    join(repoRoot, 'lib/cli.js'), 'insights', '--list', '--chain', '--json',
+  ], {
+    cwd: '/tmp/scope-a',
+    env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome },
+  })
+  const defaultIds = (JSON.parse(defaultScopeResult) as Array<{ chain_id: string }>)
+    .map((c) => c.chain_id)
+  assert.deepEqual(defaultIds, ['chain_aaaaaa55'],
+    `default scope (cwd=/tmp/scope-a) should return only chain A, got: ${JSON.stringify(defaultIds)}`)
 
   console.log('verify: insights list chain scopes')
 }

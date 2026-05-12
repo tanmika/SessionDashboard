@@ -595,7 +595,9 @@ function listChains(db: Database.Database, args: Args, range?: TimeRange): Chain
     mainParams.push(normalized, nestedPrefix.length, nestedPrefix)
   } else if (!args.all) {
     // Default: scope to process.cwd() — matches session-list's defaultCwd behavior.
-    const defaultCwd = process.cwd()
+    // Normalize through normalizeCwdArg for consistency with the explicit branch
+    // and defense against symlink/relative-path drift.
+    const defaultCwd = normalizeCwdArg(process.cwd())
     const nestedPrefix = `${defaultCwd}/`
     mainWhereClauses.push('(cwd = ? OR substr(cwd, 1, ?) = ?)')
     mainParams.push(defaultCwd, nestedPrefix.length, nestedPrefix)
@@ -743,8 +745,11 @@ function listChains(db: Database.Database, args: Args, range?: TimeRange): Chain
 
   // Apply --limit AFTER sort so the cap reflects the newest chains first.
   // args.limit defaults to 50 (same as session-list); --grep filtering above
-  // already pruned non-matching chains, so this is the final cap.
-  return args.limit > 0 ? sorted.slice(0, args.limit) : sorted
+  // already pruned non-matching chains, so this is the final cap. We pass
+  // args.limit straight to slice() to match the session-list contract: there,
+  // --limit feeds SQL LIMIT directly, so --limit 0 yields zero rows. Array
+  // .slice(0, 0) returns []; .slice(0, NaN) also returns []. No guard needed.
+  return sorted.slice(0, args.limit)
 }
 
 function printChainList(chains: ChainSummary[], args?: Args) {
@@ -1111,6 +1116,8 @@ export function main(argvInput?: string[]) {
 
   const db = openDb()
 
+  // NOTE: must come before args.cwd / args.session / args.list branches —
+  // --list --chain consumes those filters internally via listChains.
   if (args.list && args.chain) {
     const chains = listChains(db, args, range)
     if (args.json) {
