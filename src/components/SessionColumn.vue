@@ -94,6 +94,7 @@ const relativeTime = computed(() => {
         </div>
         <div class="badges">
           <span class="source-badge" :class="session.source">{{ session.source === 'codex' ? 'Codex' : 'Claude' }}</span>
+          <span v-if="session.is_subagent" class="kind-badge">子代理</span>
           <span class="status" :class="stateClass">{{ stateLabel }}</span>
           <button class="unpin-btn" @click.stop="store.setPinned(session.session_id, false)" title="从看板移除">×</button>
         </div>
@@ -211,6 +212,18 @@ const relativeTime = computed(() => {
 
 .column-header:hover .alias-edit-btn {
   opacity: 1;
+}
+
+.kind-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 196, 87, 0.14);
+  border: 1px solid rgba(255, 196, 87, 0.28);
+  color: #ffd36d;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .alias-edit-btn:hover {

@@ -2,8 +2,8 @@ import { existsSync, openSync, readSync, closeSync, statSync } from 'fs'
 import { watch } from 'fs'
 import { extractInsightBlocks, contentHash, sanitizeUserInput } from '../utils/insight-extractor.js'
 
-type InsightCallback = (sessionId: string, content: string) => void
-type UserInputCallback = (sessionId: string, content: string) => void
+type InsightCallback = (sessionId: string, content: string, timestamp: string) => void
+type UserInputCallback = (sessionId: string, content: string, timestamp: string) => void
 
 interface WatchState {
   sessionId: string
@@ -164,6 +164,7 @@ export class TranscriptWatcher {
 
   private processRecord(state: WatchState, obj: any) {
     const recordType = obj.type
+    const timestamp: string = obj.timestamp || new Date().toISOString()
 
     // Capture user input
     if (recordType === 'user') {
@@ -179,7 +180,7 @@ export class TranscriptWatcher {
           .map((b: any) => b.text)
           .join('\n')
       }
-      const sanitized = sanitizeUserInput(text)
+      const sanitized = sanitizeUserInput(text, 'claude')
       if (!sanitized) return
       const hash = contentHash(sanitized)
       if (!state.seenHashes.has(hash)) {
@@ -187,7 +188,7 @@ export class TranscriptWatcher {
         if (state.seenHashes.size > 5000) {
           state.seenHashes.clear()
         }
-        this.onUserInput(state.sessionId, sanitized)
+        this.onUserInput(state.sessionId, sanitized, timestamp)
       }
       return
     }
@@ -205,11 +206,11 @@ export class TranscriptWatcher {
       const text: string = block.text ?? ''
       if (!text || text.length < 20) continue
 
-      this.extractAndEmit(state, text)
+      this.extractAndEmit(state, text, timestamp)
     }
   }
 
-  private extractAndEmit(state: WatchState, text: string) {
+  private extractAndEmit(state: WatchState, text: string, timestamp: string) {
     const insightBlocks = extractInsightBlocks(text)
     for (const block of insightBlocks) {
       const hash = contentHash(block)
@@ -218,7 +219,7 @@ export class TranscriptWatcher {
       if (state.seenHashes.size > 5000) {
         state.seenHashes.clear()
       }
-      this.onInsight(state.sessionId, block)
+      this.onInsight(state.sessionId, block, timestamp)
     }
   }
 }

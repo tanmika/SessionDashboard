@@ -11,7 +11,7 @@ import type {
 } from '../../shared/types.js'
 import { IDLE_THRESHOLD_MS, CODEX_ENDED_THRESHOLD_MS, STATE_PRIORITY } from '../../shared/types.js'
 import { TranscriptWatcher } from './transcript-watcher.js'
-import { CodexWatcher, CODEX_SESSIONS_DIR } from './codex-watcher.js'
+import { CodexWatcher, CODEX_SESSIONS_DIR, readCodexSessionMetadata } from './codex-watcher.js'
 
 // Events that signal real progress (can clear waiting state)
 const PROGRESS_EVENTS = new Set([
@@ -38,7 +38,9 @@ export class SessionManager {
   private stmtSetPinned: Database.Statement
   private stmtSetAlias: Database.Statement
   private stmtSetPredecessor: Database.Statement
+  private stmtSetCodexThreadMeta: Database.Statement
   private stmtInsertEvent: Database.Statement
+  private stmtCheckEventExists: Database.Statement
   private stmtInsertInsight: Database.Statement
   private stmtGetSessions: Database.Statement
   private stmtGetEvents: Database.Statement
@@ -51,25 +53,35 @@ export class SessionManager {
 
   constructor(private db: Database.Database) {
     this.transcriptWatcher = new TranscriptWatcher(
-      (sessionId, content) => this.addInsight(sessionId, content, 'transcript'),
-      (sessionId, content) => this.addInsight(sessionId, content, 'user'),
+      (sessionId, content, timestamp) => this.addInsight(sessionId, content, 'transcript', timestamp),
+      (sessionId, content, timestamp) => this.addInsight(sessionId, content, 'user', timestamp),
     )
 
     // Prepare statements
     this.stmtInsertSession = db.prepare(`
-      INSERT OR IGNORE INTO sessions (session_id, cwd, transcript_path, state, last_activity, created_at, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO sessions (
+        session_id, cwd, transcript_path, state, last_activity, created_at, source, is_subagent, parent_session_id
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     this.stmtUpdateSession = db.prepare(`
-      UPDATE sessions SET state = ?, last_activity = ?, cwd = ?, transcript_path = ?
+      UPDATE sessions SET state = ?, last_activity = ?, cwd = ?, transcript_path = ?, is_subagent = ?, parent_session_id = ?
       WHERE session_id = ?
     `)
     this.stmtSetPinned = db.prepare(`UPDATE sessions SET pinned = ? WHERE session_id = ?`)
     this.stmtSetAlias = db.prepare(`UPDATE sessions SET alias = ? WHERE session_id = ?`)
     this.stmtSetPredecessor = db.prepare(`UPDATE sessions SET predecessor_id = ? WHERE session_id = ?`)
+    this.stmtSetCodexThreadMeta = db.prepare(`
+      UPDATE sessions SET is_subagent = ?, parent_session_id = ? WHERE session_id = ?
+    `)
     this.stmtInsertEvent = db.prepare(`
       INSERT INTO events (session_id, event_name, notification_type, tool_name, subagent_id, timestamp, raw_payload)
       VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+    this.stmtCheckEventExists = db.prepare(`
+      SELECT 1 FROM events
+      WHERE session_id = ? AND event_name = ? AND timestamp = ? AND raw_payload = ?
+      LIMIT 1
     `)
     this.stmtInsertInsight = db.prepare(`
       INSERT INTO insights (session_id, content, timestamp, source)
@@ -123,6 +135,26 @@ export class SessionManager {
   private restoreFromDb() {
     const rows = this.stmtGetSessions.all() as any[]
     for (const row of rows) {
+      const restoredThreadMeta = (
+        row.source === 'codex' &&
+        row.transcript_path &&
+        (row.is_subagent == null || row.parent_session_id == null || row.is_subagent === 0)
+      )
+        ? readCodexSessionMetadata(row.transcript_path)
+        : { isSubagent: row.is_subagent === 1, parentSessionId: row.parent_session_id || undefined }
+
+      if (
+        row.source === 'codex' &&
+        (restoredThreadMeta.isSubagent !== (row.is_subagent === 1) ||
+          (restoredThreadMeta.parentSessionId || '') !== (row.parent_session_id || ''))
+      ) {
+        this.stmtSetCodexThreadMeta.run(
+          restoredThreadMeta.isSubagent ? 1 : 0,
+          restoredThreadMeta.parentSessionId || '',
+          row.session_id
+        )
+      }
+
       const insights = this.stmtGetInsightsPaged.all(
         row.session_id,
         SessionManager.INSIGHT_PAGE_SIZE,
@@ -140,6 +172,8 @@ export class SessionManager {
         alias: row.alias || '',
         pinned: row.pinned === 1,
         source: (row.source as 'claude' | 'codex') ?? 'claude',
+        is_subagent: restoredThreadMeta.isSubagent,
+        parent_session_id: restoredThreadMeta.parentSessionId,
         predecessor_id: row.predecessor_id || undefined,
         insights,
         total_insights: countRow.count,
@@ -165,17 +199,17 @@ export class SessionManager {
     }
 
     this.codexWatcher = new CodexWatcher({
-      onSessionDiscovered: (sessionId, cwd, displayName, rolloutPath, timestamp) => {
-        this.handleCodexSessionDiscovered(sessionId, cwd, displayName, rolloutPath, timestamp)
+      onSessionDiscovered: (sessionId, cwd, displayName, rolloutPath, timestamp, metadata) => {
+        this.handleCodexSessionDiscovered(sessionId, cwd, displayName, rolloutPath, timestamp, metadata)
       },
       onStateChange: (sessionId, newState, timestamp) => {
         this.handleCodexStateChange(sessionId, newState, timestamp)
       },
-      onInsight: (sessionId, content) => {
-        this.addInsight(sessionId, content, 'transcript')
+      onInsight: (sessionId, content, timestamp) => {
+        this.addInsight(sessionId, content, 'transcript', timestamp)
       },
-      onUserInput: (sessionId, content) => {
-        this.addInsight(sessionId, content, 'user')
+      onUserInput: (sessionId, content, timestamp) => {
+        this.addInsight(sessionId, content, 'user', timestamp)
       },
       onEvent: (sessionId, eventName, timestamp, rawPayload) => {
         this.handleCodexEvent(sessionId, eventName, timestamp, rawPayload)
@@ -188,11 +222,37 @@ export class SessionManager {
   // ─── Codex callback handlers ───
 
   private handleCodexSessionDiscovered(
-    sessionId: string, cwd: string, displayName: string, rolloutPath: string, timestamp: string
+    sessionId: string,
+    cwd: string,
+    displayName: string,
+    rolloutPath: string,
+    timestamp: string,
+    metadata: { isSubagent: boolean, parentSessionId?: string }
   ) {
-    if (this.sessions.has(sessionId)) return // Already known
+    const existing = this.sessions.get(sessionId)
+    if (existing) {
+      let changed = false
 
-    const session = this.createSession(sessionId, cwd, rolloutPath, timestamp, 'codex')
+      if (metadata.isSubagent && !existing.is_subagent) {
+        existing.is_subagent = true
+        changed = true
+      }
+      if (metadata.parentSessionId && existing.parent_session_id !== metadata.parentSessionId) {
+        existing.parent_session_id = metadata.parentSessionId
+        changed = true
+      }
+      if (displayName && existing.alias !== displayName) {
+        existing.alias = displayName
+        existing.display_name = this.makeDisplayName(existing.cwd, sessionId, displayName)
+        this.stmtSetAlias.run(displayName, sessionId)
+        changed = true
+      }
+
+      if (changed) this.persistAndBroadcast(existing)
+      return
+    }
+
+    const session = this.createSession(sessionId, cwd, rolloutPath, timestamp, 'codex', metadata)
 
     // Use thread_name as alias if available
     if (displayName) {
@@ -206,6 +266,7 @@ export class SessionManager {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
+    if (!this.isTimestampAtLeast(timestamp, session.last_activity)) return
     session.state = newState
     session.last_activity = timestamp
     this.persistAndBroadcast(session)
@@ -215,7 +276,7 @@ export class SessionManager {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
-    this.stmtInsertEvent.run(
+    if (!this.insertEventIfNew(
       sessionId,
       eventName,
       null, // notification_type
@@ -223,10 +284,10 @@ export class SessionManager {
       null, // subagent_id
       timestamp,
       rawPayload
-    )
+    )) return
 
     // User/agent messages are concrete Codex activity signals and should refresh session liveness.
-    if (eventName === 'user_message' || eventName === 'agent_message') {
+    if ((eventName === 'user_message' || eventName === 'agent_message') && this.isTimestampAtLeast(timestamp, session.last_activity)) {
       session.state = 'active'
       session.last_activity = timestamp
       this.persistAndBroadcast(session)
@@ -249,7 +310,7 @@ export class SessionManager {
     }
     session.display_name = this.makeDisplayName(session.cwd, sid, session.alias)
 
-    this.stmtInsertEvent.run(
+    const inserted = this.insertEventIfNew(
       sid,
       payload.hook_event_name,
       payload.notification_type || null,
@@ -258,11 +319,12 @@ export class SessionManager {
       now,
       JSON.stringify(payload)
     )
+    if (!inserted) return session
 
-    if (payload.hook_event_name === 'SessionStart') {
+    if (payload.hook_event_name === 'SessionStart' && this.isTimestampAtLeast(now, session.last_activity)) {
       session.state = 'active'
       session.last_activity = now
-    } else if (payload.hook_event_name === 'Stop') {
+    } else if (payload.hook_event_name === 'Stop' && this.isTimestampAtLeast(now, session.last_activity)) {
       session.state = 'inactive'
       session.last_activity = now
     }
@@ -303,7 +365,7 @@ export class SessionManager {
     session.display_name = this.makeDisplayName(session.cwd, sid, session.alias)
 
     // Persist event
-    this.stmtInsertEvent.run(
+    const inserted = this.insertEventIfNew(
       sid,
       payload.hook_event_name,
       payload.notification_type || null,
@@ -312,9 +374,9 @@ export class SessionManager {
       now,
       JSON.stringify(payload)
     )
+    if (!inserted) return session
 
     // Update runtime state
-    const prevState = session.state
     this.applyEvent(session, payload, now)
 
     // Persist session state
@@ -327,31 +389,35 @@ export class SessionManager {
 
   private applyEvent(session: Session, payload: HookEventPayload, timestamp: string) {
     const event = payload.hook_event_name
+    const isFresh = this.isTimestampAtLeast(timestamp, session.last_activity)
 
     // Ended is terminal — except SessionStart(resume|compact) can resurrect a session.
     // This happens when: /resume, --continue, or auto context-compaction restarts the same session_id.
     if (session.state === 'ended') {
       if (event === 'SessionStart' && payload.matcher !== 'startup') {
         // 'resume', 'compact', 'clear' — same session continuing
-        session.state = 'active'
-        session.last_activity = timestamp
-        session.active_tools = 0
-        session.active_subagents = 0
-        // Ensure transcript watcher is running for the resumed session
-        if (session.transcript_path) {
-          this.transcriptWatcher.updatePath(session.session_id, session.transcript_path)
+        if (isFresh) {
+          session.state = 'active'
+          session.last_activity = timestamp
+          session.active_tools = 0
+          session.active_subagents = 0
+          // Ensure transcript watcher is running for the resumed session
+          if (session.transcript_path) {
+            this.transcriptWatcher.updatePath(session.session_id, session.transcript_path)
+          }
         }
       }
       return
     }
 
     // Track activity time for progress events
-    if (PROGRESS_EVENTS.has(event) || event === 'SessionStart') {
+    if (isFresh && (PROGRESS_EVENTS.has(event) || event === 'SessionStart')) {
       session.last_activity = timestamp
     }
 
     switch (event) {
       case 'SessionEnd':
+        if (!isFresh) break
         session.state = 'ended'
         session.last_activity = timestamp
         session.active_tools = 0
@@ -359,11 +425,13 @@ export class SessionManager {
         break
 
       case 'PermissionRequest':
+        if (!isFresh) break
         session.state = 'waiting_permission'
         session.last_activity = timestamp
         break
 
       case 'Notification':
+        if (!isFresh) break
         if (
           payload.notification_type === 'elicitation_dialog' ||
           payload.notification_type === 'idle_prompt'
@@ -376,6 +444,7 @@ export class SessionManager {
         break
 
       case 'PreToolUse':
+        if (!isFresh) break
         session.active_tools++
         session.state = 'active'
         session.last_activity = timestamp
@@ -383,29 +452,34 @@ export class SessionManager {
 
       case 'PostToolUse':
       case 'PostToolUseFailure':
+        if (!isFresh) break
         session.active_tools = Math.max(0, session.active_tools - 1)
         session.state = 'active'
         session.last_activity = timestamp
         break
 
       case 'SubagentStart':
+        if (!isFresh) break
         session.active_subagents++
         session.state = 'active'
         session.last_activity = timestamp
         break
 
       case 'SubagentStop':
+        if (!isFresh) break
         session.active_subagents = Math.max(0, session.active_subagents - 1)
         session.state = 'active'
         session.last_activity = timestamp
         break
 
       case 'SessionStart':
+        if (!isFresh) break
         session.state = 'active'
         session.last_activity = timestamp
         break
 
       case 'Stop':
+        if (!isFresh) break
         // Stop is a weak signal, update activity time but don't change state on its own
         session.last_activity = timestamp
         break
@@ -442,21 +516,25 @@ export class SessionManager {
 
   // ─── Insight management ───
 
-  addInsight(sessionId: string, content: string, source: 'transcript' | 'hook' | 'user' = 'transcript'): Insight | null {
+  addInsight(
+    sessionId: string,
+    content: string,
+    source: 'transcript' | 'hook' | 'user' = 'transcript',
+    timestamp = new Date().toISOString(),
+  ): Insight | null {
     const session = this.sessions.get(sessionId)
     if (!session) return null
 
     // DB-level dedup: skip if identical content already exists for this session+source
     if (this.stmtCheckInsightExists.get(sessionId, content, source)) return null
 
-    const now = new Date().toISOString()
-    const result = this.stmtInsertInsight.run(sessionId, content, now, source)
+    const result = this.stmtInsertInsight.run(sessionId, content, timestamp, source)
 
     const insight: Insight = {
       id: Number(result.lastInsertRowid),
       session_id: sessionId,
       content,
-      timestamp: now,
+      timestamp,
       source,
     }
 
@@ -468,12 +546,18 @@ export class SessionManager {
     }
 
     // PRD §10.6: a new transcript insight is a real progress signal — resolve waiting
-    if (source === 'transcript' && (session.state === 'waiting_user' || session.state === 'waiting_permission')) {
-      session.state = 'active'
-      session.last_activity = now
-      this.persistAndBroadcast(session)
+    let sessionChanged = false
+    if (this.isTimestampAtLeast(timestamp, session.last_activity)) {
+      session.last_activity = timestamp
+      sessionChanged = true
+      if (source === 'user') {
+        session.state = 'active'
+      } else if (source === 'transcript' && (session.state === 'waiting_user' || session.state === 'waiting_permission' || session.source === 'claude')) {
+        session.state = 'active'
+      }
     }
 
+    if (sessionChanged) this.persistAndBroadcast(session)
     this.broadcast({ type: 'new_insight', session_id: sessionId, insight })
     return insight
   }
@@ -481,7 +565,9 @@ export class SessionManager {
   // ─── Queries ───
 
   getAllSessions(): Session[] {
-    return Array.from(this.sessions.values()).map(s => this.slimSession(s))
+    return Array.from(this.sessions.values())
+      .filter(session => this.isSessionVisible(session))
+      .map(session => this.slimSession(session))
   }
 
   getSession(sessionId: string): Session | undefined {
@@ -522,7 +608,7 @@ export class SessionManager {
   }
 
   getSessionCount(): number {
-    return this.sessions.size
+    return Array.from(this.sessions.values()).filter(session => this.isSessionVisible(session)).length
   }
 
   setSessionAlias(sessionId: string, alias: string): Session | null {
@@ -555,7 +641,8 @@ export class SessionManager {
     cwd: string,
     transcriptPath: string | undefined,
     timestamp: string,
-    source: 'claude' | 'codex' = 'claude'
+    source: 'claude' | 'codex' = 'claude',
+    metadata?: { isSubagent?: boolean, parentSessionId?: string }
   ): Session {
     const session: Session = {
       session_id: sessionId,
@@ -568,6 +655,8 @@ export class SessionManager {
       alias: '',
       pinned: false,
       source,
+      is_subagent: metadata?.isSubagent === true,
+      parent_session_id: metadata?.parentSessionId,
       insights: [],
       total_insights: 0,
       active_tools: 0,
@@ -581,7 +670,9 @@ export class SessionManager {
       'active',
       timestamp,
       timestamp,
-      source
+      source,
+      session.is_subagent ? 1 : 0,
+      session.parent_session_id || '',
     )
 
     this.sessions.set(sessionId, session)
@@ -594,15 +685,51 @@ export class SessionManager {
     return session
   }
 
+  private insertEventIfNew(
+    sessionId: string,
+    eventName: string,
+    notificationType: string | null,
+    toolName: string | null,
+    subagentId: string | null,
+    timestamp: string,
+    rawPayload: string,
+  ): boolean {
+    if (this.stmtCheckEventExists.get(sessionId, eventName, timestamp, rawPayload)) return false
+    this.stmtInsertEvent.run(
+      sessionId,
+      eventName,
+      notificationType,
+      toolName,
+      subagentId,
+      timestamp,
+      rawPayload,
+    )
+    return true
+  }
+
+  private isTimestampAtLeast(candidate: string, baseline: string): boolean {
+    const candidateMs = Date.parse(candidate)
+    const baselineMs = Date.parse(baseline)
+    if (Number.isNaN(candidateMs) || Number.isNaN(baselineMs)) return true
+    return candidateMs >= baselineMs
+  }
+
   private persistAndBroadcast(session: Session) {
     this.stmtUpdateSession.run(
       session.state,
       session.last_activity,
       session.cwd,
       session.transcript_path || '',
+      session.is_subagent ? 1 : 0,
+      session.parent_session_id || '',
       session.session_id
     )
+    if (!this.isSessionVisible(session)) return
     this.broadcast({ type: 'session_update', data: this.slimSession(session) })
+  }
+
+  private isSessionVisible(session: Session): boolean {
+    return !session.is_subagent
   }
 
   // ─── Session handoff (context-clear auto-inheritance) ───

@@ -205,6 +205,7 @@ const flatItems = computed<FlatItem[]>(() => {
         >
           <span class="tree-dot" :style="{ background: stateColor(item.session!.state) }"></span>
           <span class="src-badge" :class="item.session!.source">{{ item.session!.source === 'codex' ? 'Codex' : 'Claude' }}</span>
+          <span v-if="item.session!.is_subagent" class="kind-badge">子代理</span>
           <div class="tree-session-info">
             <span class="tree-session-name">{{ item.session!.alias || item.session!.session_id.slice(0, 8) }}</span>
             <span class="tree-session-meta">{{ formatRelativeTime(item.session!.last_activity) }} · {{ item.session!.total_insights }}✦</span>
@@ -238,6 +239,7 @@ const flatItems = computed<FlatItem[]>(() => {
           <div class="hp-title">
             <span>{{ hoverSession.display_name }}</span>
             <span class="src-badge" :class="hoverSession.source">{{ hoverSession.source === 'codex' ? 'Codex' : 'Claude' }}</span>
+            <span v-if="hoverSession.is_subagent" class="kind-badge">子代理</span>
           </div>
           <div class="hp-id">{{ hoverSession.session_id.slice(0, 12) }}</div>
           <div class="hp-meta-row">
@@ -501,6 +503,18 @@ const flatItems = computed<FlatItem[]>(() => {
 }
 .src-badge.claude { background: rgba(96,165,250,0.15); color: #93c5fd; }
 .src-badge.codex { background: rgba(74,222,128,0.15); color: #86efac; }
+
+.kind-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 99px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+  background: rgba(255, 196, 87, 0.14);
+  color: #ffd36d;
+  border: 1px solid rgba(255, 196, 87, 0.24);
+}
 
 .tree-session-info {
   flex: 1; min-width: 0;

@@ -124,6 +124,9 @@ export interface Session {
   pinned: boolean
   // Session source
   source: 'claude' | 'codex'
+  // Codex subagent thread metadata
+  is_subagent: boolean
+  parent_session_id?: string
   // Predecessor session id (set during auto-handoff on context clear)
   predecessor_id?: string
   // Runtime tracking (not persisted)
