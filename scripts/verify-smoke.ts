@@ -1746,7 +1746,7 @@ function verifySubagentInheritsChainOnLatePromotion(tempRoot: string) {
     cwd: '/tmp/late-promote',
     transcriptPath: '',
     source: 'codex',
-    chainId: 'chain_parmainx',
+    chainId: 'chain_parmnntx',
   })
 
   // The would-be-subagent session is ALSO inserted directly, without subagent
@@ -1756,7 +1756,7 @@ function verifySubagentInheritsChainOnLatePromotion(tempRoot: string) {
     cwd: '/tmp/late-promote',
     transcriptPath: '',
     source: 'codex',
-    chainId: 'chain_oldchild',
+    chainId: 'chain_qdchcppd',
   })
 
   const manager = new SessionManager(db)
@@ -1782,14 +1782,14 @@ function verifySubagentInheritsChainOnLatePromotion(tempRoot: string) {
     assert.equal(row.parent_session_id, 'parent-main', 'late-sub should record its parent')
     assert.equal(
       row.chain_id,
-      'chain_parmainx',
+      'chain_parmnntx',
       `late-sub chain_id should be overwritten with parent's, got "${row.chain_id}"`
     )
 
     // In-memory consistency
     const inMemory = manager.getSession('late-sub')
     assert(inMemory, 'late-sub missing from in-memory map')
-    assert.equal(inMemory.chain_id, 'chain_parmainx', 'in-memory chain_id should match parent')
+    assert.equal(inMemory.chain_id, 'chain_parmnntx', 'in-memory chain_id should match parent')
     assert.equal(inMemory.is_subagent, true, 'in-memory is_subagent should be true')
   } finally {
     manager.destroy()
