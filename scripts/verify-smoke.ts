@@ -1735,6 +1735,67 @@ function verifyChainIdAssignedOnInsert(tempRoot: string) {
   console.log('verify: chain id assigned on insert')
 }
 
+function verifyChainInheritedFromPredecessor(tempRoot: string) {
+  const dbPath = join(tempRoot, 'chain-inherit.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+
+  // Predecessor candidate: must be pinned (or aliased), in 'ended' state, same
+  // cwd/source, and last_activity within MAX_GAP_MS (1s) of the successor's
+  // SessionStart timestamp for findPredecessor() to treat it as viable.
+  insertSession(db, 'predecessor-session', {
+    cwd: '/tmp/inherit',
+    transcriptPath: '',
+    source: 'claude',
+    chainId: 'chain_pre00000',
+  })
+  // Successor's SessionStart will be at this timestamp; predecessor must have
+  // ended within 1 second of it.
+  const successorStartTs = '2026-05-12T11:00:00.000Z'
+  const predecessorEndedTs = '2026-05-12T10:59:59.500Z'
+  db.prepare('UPDATE sessions SET pinned = 1, state = ?, last_activity = ? WHERE session_id = ?')
+    .run('ended', predecessorEndedTs, 'predecessor-session')
+
+  // Construct manager AFTER fixture insert so restoreFromDb loads the
+  // predecessor into the in-memory map (which findPredecessor scans).
+  const manager = new SessionManager(db)
+  try {
+    // Trigger creation of the successor via the same public API Task 2.1's
+    // test uses; handleEvent with SessionStart on a previously-unknown
+    // session id invokes createSession then tryInheritFromPredecessor.
+    manager.handleEvent({
+      session_id: 'successor-session',
+      hook_event_name: 'SessionStart',
+      cwd: '/tmp/inherit',
+      transcript_path: '',
+      timestamp: successorStartTs,
+    } as any)
+
+    const row = db.prepare(
+      'SELECT chain_id, predecessor_id FROM sessions WHERE session_id = ?'
+    ).get('successor-session') as { chain_id: string; predecessor_id: string } | undefined
+    assert(row, 'successor-session was not created')
+    assert.equal(row.predecessor_id, 'predecessor-session', 'successor should link to predecessor')
+    assert.equal(
+      row.chain_id,
+      'chain_pre00000',
+      `successor should inherit predecessor chain_id, got "${row.chain_id}"`
+    )
+
+    const inMemory = manager.getSession('successor-session')
+    assert(inMemory, 'in-memory successor session missing')
+    assert.equal(
+      inMemory.chain_id,
+      'chain_pre00000',
+      'in-memory chain_id should match DB after inheritance'
+    )
+  } finally {
+    manager.destroy()
+    db.close()
+  }
+  console.log('verify: chain inherited from predecessor')
+}
+
 async function main() {
   const tempRoot = mkdtempSync(join(tmpdir(), 'session-dashboard-smoke-'))
   try {
@@ -1742,6 +1803,7 @@ async function main() {
     verifyChainColumn(tempRoot)
     verifyChainIdGenerator()
     verifyChainIdAssignedOnInsert(tempRoot)
+    verifyChainInheritedFromPredecessor(tempRoot)
     verifyBuiltCli()
     verifyRuntimeDefaults()
     verifyServicePlist(tempRoot)

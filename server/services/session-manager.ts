@@ -39,6 +39,7 @@ export class SessionManager {
   private stmtSetPinned: Database.Statement
   private stmtSetAlias: Database.Statement
   private stmtSetPredecessor: Database.Statement
+  private stmtSetChainId: Database.Statement
   private stmtSetCodexThreadMeta: Database.Statement
   private stmtInsertEvent: Database.Statement
   private stmtCheckEventExists: Database.Statement
@@ -73,6 +74,7 @@ export class SessionManager {
     this.stmtSetPinned = db.prepare(`UPDATE sessions SET pinned = ? WHERE session_id = ?`)
     this.stmtSetAlias = db.prepare(`UPDATE sessions SET alias = ? WHERE session_id = ?`)
     this.stmtSetPredecessor = db.prepare(`UPDATE sessions SET predecessor_id = ? WHERE session_id = ?`)
+    this.stmtSetChainId = db.prepare(`UPDATE sessions SET chain_id = ? WHERE session_id = ?`)
     this.stmtSetCodexThreadMeta = db.prepare(`
       UPDATE sessions SET is_subagent = ?, parent_session_id = ? WHERE session_id = ?
     `)
@@ -805,6 +807,14 @@ export class SessionManager {
     // Record predecessor link
     session.predecessor_id = predecessor.session_id
     this.stmtSetPredecessor.run(predecessor.session_id, session.session_id)
+
+    // Inherit chain_id from predecessor (overrides the fresh chain_id assigned at insert time).
+    // Guard against legacy predecessors with empty chain_id (pre-Stage-3-backfill) and against
+    // no-op writes when the chains already match.
+    if (predecessor.chain_id && predecessor.chain_id !== session.chain_id) {
+      session.chain_id = predecessor.chain_id
+      this.stmtSetChainId.run(predecessor.chain_id, session.session_id)
+    }
 
     // Unpin predecessor to avoid duplicate columns on the board
     if (predecessor.pinned) {
