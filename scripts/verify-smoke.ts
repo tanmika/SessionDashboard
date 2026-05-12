@@ -900,6 +900,108 @@ function verifyInsightsListChain(tempRoot: string) {
   console.log('verify: insights list chain')
 }
 
+function verifyInsightsListChainGrep(tempRoot: string) {
+  const tempHome = join(tempRoot, 'list-chain-grep-home')
+  const dataDir = join(tempHome, 'data')
+  mkdirSync(dataDir, { recursive: true })
+  const dbPath = join(dataDir, 'dashboard.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+
+  // Chain X: main session has a matching insight + a non-matching insight.
+  insertSession(db, 'chain-x-main', {
+    cwd: '/tmp/grep-chain', transcriptPath: '', source: 'claude',
+    chainId: 'chain_xxxxxx11',
+  })
+  // Chain X: subagent with a matching insight (must NOT count toward chain match).
+  insertSession(db, 'chain-x-sub', {
+    cwd: '/tmp/grep-chain', transcriptPath: '', source: 'codex',
+    chainId: 'chain_xxxxxx11', isSubagent: true, parentSessionId: 'chain-x-main',
+  })
+  // Chain Y: main session, NO matching insights.
+  insertSession(db, 'chain-y-main', {
+    cwd: '/tmp/grep-chain', transcriptPath: '', source: 'claude',
+    chainId: 'chain_yyyyyy22',
+  })
+  // Chain Z: two main sessions, one with one match, one with two matches (test count aggregation).
+  insertSession(db, 'chain-z-main1', {
+    cwd: '/tmp/grep-chain', transcriptPath: '', source: 'claude',
+    chainId: 'chain_zzzzzz33',
+  })
+  insertSession(db, 'chain-z-main2', {
+    cwd: '/tmp/grep-chain', transcriptPath: '', source: 'claude',
+    chainId: 'chain_zzzzzz33', predecessorId: 'chain-z-main1',
+  })
+
+  // Insights
+  insertInsight(db, 'chain-x-main', 'pagination logic fix', 'transcript', '2026-05-10T09:00:00.000Z')
+  insertInsight(db, 'chain-x-main', 'unrelated change', 'transcript', '2026-05-10T09:30:00.000Z')
+  insertInsight(db, 'chain-x-sub', 'pagination in subagent', 'transcript', '2026-05-10T10:00:00.000Z')
+  insertInsight(db, 'chain-y-main', 'no keyword here', 'transcript', '2026-05-09T09:00:00.000Z')
+  insertInsight(db, 'chain-z-main1', 'pagination edge case', 'transcript', '2026-05-11T09:00:00.000Z')
+  insertInsight(db, 'chain-z-main2', 'pagination polish', 'transcript', '2026-05-12T09:00:00.000Z')
+  insertInsight(db, 'chain-z-main2', 'pagination second hit', 'transcript', '2026-05-12T09:30:00.000Z')
+
+  // Fix last_activity to control order
+  db.prepare('UPDATE sessions SET last_activity = ? WHERE session_id = ?')
+    .run('2026-05-10T09:30:00.000Z', 'chain-x-main')
+  db.prepare('UPDATE sessions SET last_activity = ? WHERE session_id = ?')
+    .run('2026-05-09T09:00:00.000Z', 'chain-y-main')
+  db.prepare('UPDATE sessions SET last_activity = ? WHERE session_id = ?')
+    .run('2026-05-12T09:30:00.000Z', 'chain-z-main2')
+
+  db.close()
+
+  const stdout = runCommand('node', [
+    'lib/cli.js', 'insights', '--list', '--chain', '--all', '--grep', 'pagination', '--json',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+
+  const parsed = JSON.parse(stdout) as Array<{
+    chain_id: string
+    main_session_ids: string[]
+    subagent_session_ids: string[]
+    sessions_count: number
+    representative_session_id: string
+    insights_count: number
+    matched_insights_count?: number
+    chain_started_at: string
+    chain_last_activity: string
+    cwd: string
+  }>
+
+  // Only chains with a MAIN insight matching 'pagination' should appear.
+  // Chain Y has no matches anywhere → excluded.
+  const ids = parsed.map((c) => c.chain_id)
+  assert.deepEqual(ids.sort(), ['chain_xxxxxx11', 'chain_zzzzzz33'].sort(),
+    `expected chains [X, Z], got: ${JSON.stringify(ids)}`)
+
+  const chainX = parsed.find((c) => c.chain_id === 'chain_xxxxxx11')!
+  const chainZ = parsed.find((c) => c.chain_id === 'chain_zzzzzz33')!
+
+  // Chain X: 1 main-zone match ('pagination logic fix'). The subagent's
+  // 'pagination in subagent' must NOT contribute to matched_insights_count.
+  assert.equal(chainX.matched_insights_count, 1,
+    `chain X matched_insights_count should be 1 (main only), got ${chainX.matched_insights_count}`)
+
+  // Chain Z: 3 main-zone matches (1 in main1 + 2 in main2).
+  assert.equal(chainZ.matched_insights_count, 3,
+    `chain Z matched_insights_count should be 3, got ${chainZ.matched_insights_count}`)
+
+  // Order: chain Z is newer (2026-05-12) so it appears first.
+  assert.equal(parsed[0].chain_id, 'chain_zzzzzz33',
+    'order should be MAX(last_activity) DESC')
+
+  // insights_count (unfiltered count) is still populated and reflects ALL main-zone insights.
+  // Chain X main has 2 total insights (pagination + unrelated); insights_count = 2.
+  // Chain Z main has 3 total insights; insights_count = 3.
+  assert.equal(chainX.insights_count, 2,
+    `chain X insights_count should be 2 (unfiltered), got ${chainX.insights_count}`)
+  assert.equal(chainZ.insights_count, 3,
+    `chain Z insights_count should be 3 (unfiltered), got ${chainZ.insights_count}`)
+
+  console.log('verify: insights list chain grep')
+}
+
 function verifyCodexHook() {
   const stdout = runCommand('bash', ['hooks/codex-session-hook.sh'], {
     env: { ...process.env, SESSION_DASHBOARD_URL: 'http://127.0.0.1:9' },
@@ -2227,6 +2329,7 @@ async function main() {
     verifyInsightsSessionExactPriority(tempRoot)
     verifyInsightsChainFlagParsing(tempRoot)
     verifyInsightsListChain(tempRoot)
+    verifyInsightsListChainGrep(tempRoot)
     verifyCodexHook()
     verifySessionRestore(tempRoot)
     verifySessionExport(tempRoot)

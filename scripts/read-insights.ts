@@ -57,7 +57,8 @@ interface ChainSummary {
   subagent_session_ids: string[]
   sessions_count: number              // main区 count (default; widens if --include-subagents)
   representative_session_id: string   // main session with MAX(last_activity)
-  insights_count: number              // main区 insights only by default
+  insights_count: number              // main区 insights only by default (unfiltered)
+  matched_insights_count?: number     // present only when --grep is active (main区 only)
   chain_started_at: string            // MIN(created_at) across main区
   chain_last_activity: string         // MAX(last_activity) across main区
   cwd: string                         // any main session's cwd (they all share it)
@@ -574,7 +575,7 @@ function filterSessionsByGrep(db: Database.Database, sessions: SessionRow[], pat
   ))
 }
 
-function listChains(db: Database.Database, _args: Args): ChainSummary[] {
+function listChains(db: Database.Database, args: Args): ChainSummary[] {
   // Step 1: aggregate session metadata by chain_id.
   // We only consider main区 (is_subagent = 0) for the headline fields:
   // sessions_count, representative_session_id, chain_started_at, chain_last_activity, cwd.
@@ -656,6 +657,45 @@ function listChains(db: Database.Database, _args: Args): ChainSummary[] {
     }
   }
 
+  // Step 3: when --grep is active, fetch all main-zone insight contents for the
+  // candidate chains and count matches per chain in JS (mirrors the session-list
+  // grep path via compileGrep, which produces the same "invalid regex pattern"
+  // error on bad input). Only chains with at least one main-zone match survive.
+  // compileGrep runs unconditionally on args.grep so an invalid pattern fails
+  // fast regardless of whether any chains exist — matching the session-list
+  // grep path's validate-first semantics.
+  if (args.grep) {
+    const re = compileGrep(args.grep)
+    if (chainsMap.size > 0) {
+      const chainIds = [...chainsMap.keys()]
+      const placeholders = chainIds.map(() => '?').join(',')
+      const insightRows = db.prepare(`
+        SELECT s.chain_id, i.content
+        FROM sessions s
+        JOIN insights i ON i.session_id = s.session_id
+        WHERE s.is_subagent = 0 AND s.chain_id IN (${placeholders})
+      `).all(...chainIds) as Array<{ chain_id: string; content: string }>
+
+      const matchCounts = new Map<string, number>()
+      for (const row of insightRows) {
+        if (re.test(row.content)) {
+          matchCounts.set(row.chain_id, (matchCounts.get(row.chain_id) || 0) + 1)
+        }
+      }
+
+      // Drop chains with zero matches; annotate survivors with matched_insights_count.
+      for (const chainId of chainIds) {
+        const matched = matchCounts.get(chainId) || 0
+        if (matched === 0) {
+          chainsMap.delete(chainId)
+        } else {
+          const chain = chainsMap.get(chainId)!
+          chain.matched_insights_count = matched
+        }
+      }
+    }
+  }
+
   // Sort by chain_last_activity DESC; tie-break by chain_id ASC for determinism.
   return [...chainsMap.values()].sort((a, b) => {
     const ts = b.chain_last_activity.localeCompare(a.chain_last_activity)
@@ -664,15 +704,20 @@ function listChains(db: Database.Database, _args: Args): ChainSummary[] {
   })
 }
 
-function printChainList(chains: ChainSummary[]) {
+function printChainList(chains: ChainSummary[], args?: Args) {
+  const showHits = !!args?.grep
   console.log(
     'CHAIN_ID'.padEnd(16) +
     'SESSIONS'.padEnd(10) +
     'INSIGHTS'.padEnd(10) +
+    (showHits ? 'HITS'.padEnd(8) : '') +
     'LAST_ACTIVE'.padEnd(13) +
     'CWD'
   )
   console.log('─'.repeat(80))
+  if (showHits && args?.grep) {
+    console.log(`[grep: "${args.grep}"]`)
+  }
 
   for (const chain of chains) {
     const sessionsLabel = chain.subagent_session_ids.length > 0
@@ -682,6 +727,7 @@ function printChainList(chains: ChainSummary[]) {
       chain.chain_id.padEnd(16) +
       sessionsLabel.padEnd(10) +
       String(chain.insights_count).padEnd(10) +
+      (showHits ? String(chain.matched_insights_count || 0).padEnd(8) : '') +
       formatRelative(chain.chain_last_activity).padEnd(13) +
       chain.cwd
     )
@@ -1069,7 +1115,7 @@ export function main(argvInput?: string[]) {
     if (args.json) {
       console.log(JSON.stringify(chains, null, 2))
     } else {
-      printChainList(chains)
+      printChainList(chains, args)
     }
     db.close()
     return
