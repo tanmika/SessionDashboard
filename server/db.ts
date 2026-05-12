@@ -49,6 +49,8 @@ export function applySchema(db: Database.Database) {
   try { db.exec(`ALTER TABLE sessions ADD COLUMN is_subagent INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE sessions ADD COLUMN parent_session_id TEXT DEFAULT ''`) } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE sessions ADD COLUMN predecessor_id TEXT DEFAULT ''`) } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE sessions ADD COLUMN chain_id TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_chain ON sessions(chain_id)`) } catch { /* already exists */ }
 }
 
 export function initDb(): Database.Database {

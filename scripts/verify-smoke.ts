@@ -1638,10 +1638,24 @@ async function verifyTranscriptRebind(tempRoot: string) {
   console.log('verify: transcript watcher rebind')
 }
 
+function verifyChainColumn(tempRoot: string) {
+  const dbPath = join(tempRoot, 'chain-column.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+  try {
+    const cols = db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
+    assert(cols.some((c) => c.name === 'chain_id'), 'sessions.chain_id column missing after applySchema')
+  } finally {
+    db.close()
+  }
+  console.log('verify: chain column')
+}
+
 async function main() {
   const tempRoot = mkdtempSync(join(tmpdir(), 'session-dashboard-smoke-'))
   try {
     verifyPackageManifest(tempRoot)
+    verifyChainColumn(tempRoot)
     verifyBuiltCli()
     verifyRuntimeDefaults()
     verifyServicePlist(tempRoot)
