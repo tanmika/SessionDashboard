@@ -200,6 +200,13 @@ type ChainSessionRow = {
   created_at: string
 }
 
+/**
+ * Scope: full sessions table. Ignores the `--days` cutoff because chain roots
+ * may predate it arbitrarily — a successor inserted yesterday can have a
+ * predecessor from years ago. The JSON summary's `days` field describes the
+ * scope of other repair passes; `chainIdsAssigned` always reflects the full
+ * table.
+ */
 function backfillChainIds(db: Database.Database, dryRun: boolean): { assigned: number } {
   const sessions = db.prepare(`
     SELECT session_id, predecessor_id, is_subagent, parent_session_id, chain_id, created_at
@@ -217,6 +224,10 @@ function backfillChainIds(db: Database.Database, dryRun: boolean): { assigned: n
     if (row.chain_id) return row.chain_id
 
     let chainId: string | null = null
+    // Priority: subagent → parent comes before successor → predecessor.
+    // Subagent identity is semantically "stronger" (subagent belongs to parent's chain
+    // by definition). A row with both flags set shouldn't exist in live data, but if
+    // it does, we treat it as a subagent first.
     if (row.is_subagent === 1 && row.parent_session_id && byId.has(row.parent_session_id)) {
       chainId = resolve(row.parent_session_id, depth + 1)
     } else if (row.predecessor_id && byId.has(row.predecessor_id)) {
@@ -229,6 +240,12 @@ function backfillChainIds(db: Database.Database, dryRun: boolean): { assigned: n
     return chainId
   }
 
+  // chainIdsAssigned counts rows whose outer-loop visit triggered backfill.
+  // Transitively-resolved ancestors visited later in the loop are skipped (their
+  // chain_id has already been set by the recursive descent), so this equals the
+  // DB UPDATE count whenever the input order is topological — which our
+  // `ORDER BY created_at ASC` provides for any chain built by predecessor or
+  // parent links (those edges always flow earlier → later).
   let assigned = 0
   for (const session of sessions) {
     if (!session.chain_id) {
@@ -422,7 +439,8 @@ function main() {
   })
 
   const summary = repair()
-  const chainResult = backfillChainIds(db, dryRun)
+  const runBackfill = db.transaction(() => backfillChainIds(db, dryRun))
+  const chainResult = runBackfill()
   console.log(JSON.stringify({ days, dryRun, ...summary, chainIdsAssigned: chainResult.assigned }, null, 2))
   db.close()
 }
