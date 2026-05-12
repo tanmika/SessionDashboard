@@ -45,7 +45,16 @@ function parseArgs() {
     } else if (arg === '--rebuild-chains') {
       rebuildChains = true
     } else if (arg === '--help') {
-      console.log('Usage: tsx scripts/repair-dashboard.ts [--days N] [--dry-run] [--rebuild-chains]')
+      console.log([
+        'Usage: tsx scripts/repair-dashboard.ts [options]',
+        '',
+        'Options:',
+        '  --days N           Window (in days) for insight/event/session repair (default: 7).',
+        '  --dry-run          Compute changes and emit summary without writing.',
+        '  --rebuild-chains   Clear ALL chain_id values and recompute the full table.',
+        '                     Use only when chain assignments are known to be wrong;',
+        '                     normal backfill (no flag) is incremental and idempotent.',
+      ].join('\n'))
       process.exit(0)
     }
   }
@@ -212,14 +221,26 @@ type ChainSessionRow = {
  *
  * Behavior with `--rebuild-chains`: callers should clear all chain_ids
  * BEFORE invoking this function (inside the same transaction). The function
- * itself does not know about the rebuild flag.
+ * itself does not know about the rebuild flag. Pass `rebuildAll = true` so
+ * the in-memory view also treats every row as empty — this makes the
+ * `chainIdsAssigned` count reflect a full rebuild even when `dryRun` skips
+ * the DB-level clear.
  */
-function backfillChainIds(db: Database.Database, dryRun: boolean): { assigned: number } {
+function backfillChainIds(db: Database.Database, dryRun: boolean, rebuildAll = false): { assigned: number } {
   const sessions = db.prepare(`
     SELECT session_id, predecessor_id, is_subagent, parent_session_id, chain_id, created_at
     FROM sessions
     ORDER BY created_at ASC
   `).all() as ChainSessionRow[]
+
+  if (rebuildAll) {
+    // Treat every row as needing assignment, regardless of current chain_id.
+    // The DB-level clear (when !dryRun) was already done by the caller inside
+    // the same transaction; this in-memory mirror makes the algorithm see
+    // a uniform "empty" state in BOTH dry-run and real-run modes, so
+    // chainIdsAssigned reports the true scope of a rebuild.
+    for (const s of sessions) s.chain_id = ''
+  }
 
   const byId = new Map(sessions.map((s) => [s.session_id, s]))
   const update = db.prepare('UPDATE sessions SET chain_id = ? WHERE session_id = ?')
@@ -450,7 +471,7 @@ function main() {
     if (rebuildChains && !dryRun) {
       db.prepare('UPDATE sessions SET chain_id = \'\'').run()
     }
-    return backfillChainIds(db, dryRun)
+    return backfillChainIds(db, dryRun, rebuildChains)
   })
   const chainResult = runBackfill()
   console.log(JSON.stringify({ days, dryRun, rebuildChains, ...summary, chainIdsAssigned: chainResult.assigned }, null, 2))

@@ -1709,6 +1709,46 @@ function verifyRepairRebuildsChainIds(tempRoot: string) {
   console.log('verify: repair rebuilds chain ids')
 }
 
+function verifyRepairRebuildsChainIdsDryRun(tempRoot: string) {
+  const tempHome = join(tempRoot, 'chain-rebuild-dryrun-home')
+  const dataDir = join(tempHome, 'data')
+  mkdirSync(dataDir, { recursive: true })
+  const dbPath = join(dataDir, 'dashboard.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+
+  insertSession(db, 'chain-a', { cwd: '/tmp/r', transcriptPath: '', source: 'claude' })
+  insertSession(db, 'chain-b', { cwd: '/tmp/r', transcriptPath: '', source: 'claude', predecessorId: 'chain-a' })
+  insertSession(db, 'chain-c', { cwd: '/tmp/r', transcriptPath: '', source: 'claude', predecessorId: 'chain-b' })
+  db.prepare('UPDATE sessions SET chain_id = ? WHERE session_id = ?').run('chain_zzzaaaa1', 'chain-a')
+  db.prepare('UPDATE sessions SET chain_id = ? WHERE session_id = ?').run('chain_zzzbbbb2', 'chain-b')
+  db.prepare('UPDATE sessions SET chain_id = ? WHERE session_id = ?').run('chain_zzzcccc3', 'chain-c')
+  db.close()
+
+  const stdout = runCommand('node', [
+    'scripts/repair-dashboard.js', '--rebuild-chains', '--dry-run', '--days', '3650',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+
+  const summary = JSON.parse(stdout) as { rebuildChains: boolean; dryRun: boolean; chainIdsAssigned: number }
+  assert.equal(summary.dryRun, true)
+  assert.equal(summary.rebuildChains, true)
+  assert.equal(summary.chainIdsAssigned, 3, `dry-run should preview full rebuild count, got ${summary.chainIdsAssigned}`)
+
+  const repaired = new Database(dbPath, { readonly: true })
+  try {
+    const rows = repaired.prepare(
+      'SELECT session_id, chain_id FROM sessions WHERE session_id IN (?, ?, ?)'
+    ).all('chain-a', 'chain-b', 'chain-c') as Array<{ session_id: string; chain_id: string }>
+    const map = Object.fromEntries(rows.map((r) => [r.session_id, r.chain_id]))
+    assert.equal(map['chain-a'], 'chain_zzzaaaa1', 'dry-run must not modify chain-a')
+    assert.equal(map['chain-b'], 'chain_zzzbbbb2', 'dry-run must not modify chain-b')
+    assert.equal(map['chain-c'], 'chain_zzzcccc3', 'dry-run must not modify chain-c')
+  } finally {
+    repaired.close()
+  }
+  console.log('verify: repair rebuilds chain ids dry-run')
+}
+
 async function verifyTranscriptRebind(tempRoot: string) {
   const transcriptDir = join(tempRoot, 'transcripts')
   mkdirSync(transcriptDir, { recursive: true })
@@ -1990,6 +2030,7 @@ async function main() {
     verifyRepairScript(tempRoot)
     verifyRepairBackfillsChainIds(tempRoot)
     verifyRepairRebuildsChainIds(tempRoot)
+    verifyRepairRebuildsChainIdsDryRun(tempRoot)
     await verifyTranscriptRebind(tempRoot)
     console.log('verify: smoke checks passed')
   } finally {
