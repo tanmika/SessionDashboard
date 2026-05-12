@@ -1605,6 +1605,59 @@ function verifyRepairScript(tempRoot: string) {
   console.log('verify: repair script')
 }
 
+function verifyRepairBackfillsChainIds(tempRoot: string) {
+  const tempHome = join(tempRoot, 'chain-repair-home')
+  const dataDir = join(tempHome, 'data')
+  mkdirSync(dataDir, { recursive: true })
+  const dbPath = join(dataDir, 'dashboard.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+
+  // Three-session chain: A → B → C (no chain_id supplied so fixture defaults to '')
+  insertSession(db, 'chain-a', { cwd: '/tmp/r', transcriptPath: '', source: 'claude' })
+  insertSession(db, 'chain-b', { cwd: '/tmp/r', transcriptPath: '', source: 'claude', predecessorId: 'chain-a' })
+  insertSession(db, 'chain-c', { cwd: '/tmp/r', transcriptPath: '', source: 'claude', predecessorId: 'chain-b' })
+
+  // Subagent of chain-b
+  insertSession(db, 'chain-sub', {
+    cwd: '/tmp/r',
+    transcriptPath: '',
+    source: 'codex',
+    isSubagent: true,
+    parentSessionId: 'chain-b',
+  })
+
+  // Standalone session in a different cwd
+  insertSession(db, 'standalone', { cwd: '/tmp/r2', transcriptPath: '', source: 'claude' })
+  db.close()
+
+  runCommand('node', ['scripts/repair-dashboard.js', '--days', '3650'], {
+    env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome },
+  })
+
+  const repaired = new Database(dbPath, { readonly: true })
+  try {
+    const rows = repaired.prepare(
+      'SELECT session_id, chain_id FROM sessions ORDER BY session_id'
+    ).all() as Array<{ session_id: string; chain_id: string }>
+    const map = Object.fromEntries(rows.map((r) => [r.session_id, r.chain_id]))
+
+    // Use the actual alphabet, NOT the plan's loose [a-z0-9] which would
+    // accept invalid letters like i/l/o/u.
+    const chainRe = /^chain_[abcdefghjkmnpqrstvwxyz0-9]{8}$/
+
+    assert.match(map['chain-a'], chainRe, `chain-a chain_id invalid: "${map['chain-a']}"`)
+    assert.equal(map['chain-b'], map['chain-a'], 'chain-b must share chain-a chain_id')
+    assert.equal(map['chain-c'], map['chain-a'], 'chain-c must share chain-a chain_id')
+    assert.equal(map['chain-sub'], map['chain-b'], 'subagent must share parent chain_id')
+    assert.notEqual(map['standalone'], map['chain-a'], 'standalone gets its own chain_id')
+    assert.match(map['standalone'], chainRe, `standalone chain_id invalid: "${map['standalone']}"`)
+  } finally {
+    repaired.close()
+  }
+  console.log('verify: repair backfills chain ids')
+}
+
 async function verifyTranscriptRebind(tempRoot: string) {
   const transcriptDir = join(tempRoot, 'transcripts')
   mkdirSync(transcriptDir, { recursive: true })
@@ -1884,6 +1937,7 @@ async function main() {
     verifyUserInputNoiseFiltering()
     verifyInsightTimestampActivity(tempRoot)
     verifyRepairScript(tempRoot)
+    verifyRepairBackfillsChainIds(tempRoot)
     await verifyTranscriptRebind(tempRoot)
     console.log('verify: smoke checks passed')
   } finally {

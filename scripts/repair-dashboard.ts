@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import { existsSync, readFileSync } from 'fs'
 import { extractInsightBlocks, sanitizeUserInput } from '../server/utils/insight-extractor.js'
+import { generateChainId } from '../shared/chain-id.js'
 import { getDbPath } from '../shared/config.js'
 
 type Source = 'claude' | 'codex'
@@ -190,6 +191,54 @@ function collectCandidates(session: SessionRow): CandidateInsight[] {
     : collectClaudeInsights(session.transcript_path)
 }
 
+type ChainSessionRow = {
+  session_id: string
+  predecessor_id: string
+  is_subagent: number
+  parent_session_id: string
+  chain_id: string
+  created_at: string
+}
+
+function backfillChainIds(db: Database.Database, dryRun: boolean): { assigned: number } {
+  const sessions = db.prepare(`
+    SELECT session_id, predecessor_id, is_subagent, parent_session_id, chain_id, created_at
+    FROM sessions
+    ORDER BY created_at ASC
+  `).all() as ChainSessionRow[]
+
+  const byId = new Map(sessions.map((s) => [s.session_id, s]))
+  const update = db.prepare('UPDATE sessions SET chain_id = ? WHERE session_id = ?')
+
+  function resolve(sessionId: string, depth = 0): string {
+    if (depth > 100) return generateChainId() // cycle guard
+    const row = byId.get(sessionId)
+    if (!row) return generateChainId()
+    if (row.chain_id) return row.chain_id
+
+    let chainId: string | null = null
+    if (row.is_subagent === 1 && row.parent_session_id && byId.has(row.parent_session_id)) {
+      chainId = resolve(row.parent_session_id, depth + 1)
+    } else if (row.predecessor_id && byId.has(row.predecessor_id)) {
+      chainId = resolve(row.predecessor_id, depth + 1)
+    }
+    if (!chainId) chainId = generateChainId()
+
+    row.chain_id = chainId
+    if (!dryRun) update.run(chainId, sessionId)
+    return chainId
+  }
+
+  let assigned = 0
+  for (const session of sessions) {
+    if (!session.chain_id) {
+      resolve(session.session_id)
+      assigned += 1
+    }
+  }
+  return { assigned }
+}
+
 function main() {
   const { days, dryRun } = parseArgs()
   const db = new Database(getDbPath())
@@ -373,7 +422,8 @@ function main() {
   })
 
   const summary = repair()
-  console.log(JSON.stringify({ days, dryRun, ...summary }, null, 2))
+  const chainResult = backfillChainIds(db, dryRun)
+  console.log(JSON.stringify({ days, dryRun, ...summary, chainIdsAssigned: chainResult.assigned }, null, 2))
   db.close()
 }
 
