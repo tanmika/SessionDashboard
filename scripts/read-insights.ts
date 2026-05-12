@@ -637,7 +637,10 @@ function listChains(db: Database.Database, args: Args): ChainSummary[] {
     if (chain) chain.subagent_session_ids.push(row.session_id)
   }
 
-  // Step 2: count main区 insights per chain.
+  // Step 2: count main区 insights per chain. User prompts are excluded to match
+  // the session-list semantics (ListedSession.insights_count uses source != 'user').
+  // The user-prompt filter lives on the ON clause so chains with only user-prompt
+  // insights still get a row with cnt = 0 via LEFT JOIN, rather than being skipped.
   if (chainsMap.size > 0) {
     const chainIds = [...chainsMap.keys()]
     // chainIds.length is bounded by SQLITE_LIMIT_VARIABLE_NUMBER (32766 in bundled
@@ -647,7 +650,7 @@ function listChains(db: Database.Database, args: Args): ChainSummary[] {
     const insightCounts = db.prepare(`
       SELECT s.chain_id, COUNT(i.id) AS cnt
       FROM sessions s
-      LEFT JOIN insights i ON i.session_id = s.session_id
+      LEFT JOIN insights i ON i.session_id = s.session_id AND i.source != 'user'
       WHERE s.is_subagent = 0 AND s.chain_id IN (${placeholders})
       GROUP BY s.chain_id
     `).all(...chainIds) as Array<{ chain_id: string; cnt: number }>
@@ -660,10 +663,12 @@ function listChains(db: Database.Database, args: Args): ChainSummary[] {
   // Step 3: when --grep is active, fetch all main-zone insight contents for the
   // candidate chains and count matches per chain in JS (mirrors the session-list
   // grep path via compileGrep, which produces the same "invalid regex pattern"
-  // error on bad input). Only chains with at least one main-zone match survive.
-  // compileGrep runs unconditionally on args.grep so an invalid pattern fails
-  // fast regardless of whether any chains exist — matching the session-list
-  // grep path's validate-first semantics.
+  // error on bad input). User prompts are excluded (i.source != 'user') to honor
+  // the help text contract "User prompts are not counted as grep matches" and to
+  // stay consistent with the session-list grep path. Only chains with at least
+  // one main-zone match survive. compileGrep runs unconditionally on args.grep
+  // so an invalid pattern fails fast regardless of whether any chains exist —
+  // matching the session-list grep path's validate-first semantics.
   if (args.grep) {
     const re = compileGrep(args.grep)
     if (chainsMap.size > 0) {
@@ -673,7 +678,9 @@ function listChains(db: Database.Database, args: Args): ChainSummary[] {
         SELECT s.chain_id, i.content
         FROM sessions s
         JOIN insights i ON i.session_id = s.session_id
-        WHERE s.is_subagent = 0 AND s.chain_id IN (${placeholders})
+        WHERE s.is_subagent = 0
+          AND s.chain_id IN (${placeholders})
+          AND i.source != 'user'
       `).all(...chainIds) as Array<{ chain_id: string; content: string }>
 
       const matchCounts = new Map<string, number>()
@@ -714,10 +721,10 @@ function printChainList(chains: ChainSummary[], args?: Args) {
     'LAST_ACTIVE'.padEnd(13) +
     'CWD'
   )
-  console.log('─'.repeat(80))
   if (showHits && args?.grep) {
     console.log(`[grep: "${args.grep}"]`)
   }
+  console.log('─'.repeat(80))
 
   for (const chain of chains) {
     const sessionsLabel = chain.subagent_session_ids.length > 0

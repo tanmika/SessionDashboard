@@ -936,6 +936,10 @@ function verifyInsightsListChainGrep(tempRoot: string) {
   // Insights
   insertInsight(db, 'chain-x-main', 'pagination logic fix', 'transcript', '2026-05-10T09:00:00.000Z')
   insertInsight(db, 'chain-x-main', 'unrelated change', 'transcript', '2026-05-10T09:30:00.000Z')
+  // User prompt containing the grep keyword on the same main session — MUST be
+  // excluded from BOTH insights_count (Step 2 filter) AND matched_insights_count
+  // (Step 3 filter), matching session-list semantics and the help text contract.
+  insertInsight(db, 'chain-x-main', 'pagination user prompt', 'user', '2026-05-10T08:30:00.000Z')
   insertInsight(db, 'chain-x-sub', 'pagination in subagent', 'transcript', '2026-05-10T10:00:00.000Z')
   insertInsight(db, 'chain-y-main', 'no keyword here', 'transcript', '2026-05-09T09:00:00.000Z')
   insertInsight(db, 'chain-z-main1', 'pagination edge case', 'transcript', '2026-05-11T09:00:00.000Z')
@@ -952,8 +956,11 @@ function verifyInsightsListChainGrep(tempRoot: string) {
 
   db.close()
 
+  // Uppercase 'PAGINATION' against lowercase fixture content exercises the
+  // case-insensitive 'i' flag in compileGrep — a regression that drops the flag
+  // would make this test fail.
   const stdout = runCommand('node', [
-    'lib/cli.js', 'insights', '--list', '--chain', '--all', '--grep', 'pagination', '--json',
+    'lib/cli.js', 'insights', '--list', '--chain', '--all', '--grep', 'PAGINATION', '--json',
   ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
 
   const parsed = JSON.parse(stdout) as Array<{
