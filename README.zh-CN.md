@@ -56,10 +56,11 @@ npm run build
 ### 3. 启动运行时
 
 ```bash
-npx tsx server/index.ts
+npm run build
+node lib/cli.js init
 ```
 
-服务默认监听 **3210** 端口。在浏览器中打开 `http://localhost:3210`。
+初始化命令会安装 hooks，并注册 macOS 后台服务。服务默认监听 **38473** 端口。在浏览器中打开 `http://localhost:38473`。
 
 ### 4. 配置 Claude Code Hooks
 
@@ -92,7 +93,7 @@ npm run dev
 ```
 
 - 前端开发服务器：`http://localhost:5173`（Vite HMR）
-- 后端：`http://localhost:3210`（tsx watch）
+- 后端：`http://localhost:38473`（tsx watch）
 
 无需真实 Claude Code 实例，可通过模拟脚本生成测试数据：
 
@@ -105,9 +106,14 @@ bash scripts/dev-simulate.sh  # 创建 5 个不同状态的会话
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
-| `SESSION_DASHBOARD_URL` | `http://localhost:3210` | 覆盖 hook 脚本 POST 的目标地址 |
+| `SESSION_DASHBOARD_PORT` | `38473` | 服务端口 |
+| `SESSION_DASHBOARD_URL` | `http://localhost:38473` | 覆盖 hook 脚本 POST 的目标地址 |
 
-如需修改默认端口，编辑 `shared/types.ts` 中的 `SERVER_PORT`。
+如需修改默认端口，为服务设置 `SESSION_DASHBOARD_PORT`，并为 hooks 设置 `SESSION_DASHBOARD_URL`。
+
+```bash
+SESSION_DASHBOARD_PORT=4000 SESSION_DASHBOARD_URL=http://localhost:4000 node lib/cli.js install-service
+```
 
 ## 工作原理
 

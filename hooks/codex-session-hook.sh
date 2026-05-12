@@ -6,7 +6,7 @@
 # 1. On SessionStart, inject the current session_id into Codex context.
 # 2. Forward Codex hook events to the local dashboard runtime.
 
-DASHBOARD_URL="${SESSION_DASHBOARD_URL:-http://localhost:3210}"
+DASHBOARD_URL="${SESSION_DASHBOARD_URL:-http://localhost:38473}"
 
 PAYLOAD=$(cat)
 

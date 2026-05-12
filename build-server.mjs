@@ -10,6 +10,7 @@
  */
 
 import { build } from 'esbuild'
+import { chmodSync } from 'fs'
 
 const commonOptions = {
   bundle: true,
@@ -30,6 +31,22 @@ await build({
   outfile: 'lib/server.js',
 })
 
+// CLI helper modules loaded dynamically by lib/cli.js. Build these before the
+// CLI bundle because bin/cli.ts imports the generated .js module paths.
+await build({
+  ...commonOptions,
+  entryPoints: [
+    'scripts/setup-hooks.ts',
+    'scripts/setup-codex.ts',
+    'scripts/read-insights.ts',
+    'scripts/cut-records.ts',
+    'scripts/export-session.ts',
+    'scripts/repair-dashboard.ts',
+    'scripts/verify-smoke.ts',
+  ],
+  outdir: 'scripts',
+})
+
 // CLI bundle (with shebang for bin entry)
 await build({
   ...commonOptions,
@@ -38,19 +55,7 @@ await build({
   banner: { js: '#!/usr/bin/env node' },
 })
 
-// CLI helper modules loaded dynamically by lib/cli.js
-await build({
-  ...commonOptions,
-  entryPoints: [
-    'scripts/setup-hooks.ts',
-    'scripts/setup-codex.ts',
-    'scripts/read-insights.ts',
-    'scripts/export-session.ts',
-    'scripts/repair-dashboard.ts',
-    'scripts/verify-smoke.ts',
-  ],
-  outdir: 'scripts',
-})
+chmodSync('lib/cli.js', 0o755)
 
 console.log('  ✓ lib/server.js')
 console.log('  ✓ lib/cli.js')

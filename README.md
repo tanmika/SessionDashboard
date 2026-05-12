@@ -56,10 +56,11 @@ npm run build
 ### 3. Start the runtime
 
 ```bash
-npx tsx server/index.ts
+npm run build
+node lib/cli.js init
 ```
 
-The server starts on port **3210** by default. Open `http://localhost:3210` in your browser.
+The init command installs hooks and registers a macOS background service. The server starts on port **38473** by default. Open `http://localhost:38473` in your browser.
 
 ### 4. Wire up Claude Code hooks
 
@@ -92,7 +93,7 @@ npm run dev
 ```
 
 - Frontend dev server: `http://localhost:5173` (Vite HMR)
-- Backend: `http://localhost:3210` (tsx watch)
+- Backend: `http://localhost:38473` (tsx watch)
 
 Simulate sessions without a real Claude Code instance:
 
@@ -105,9 +106,14 @@ bash scripts/dev-simulate.sh  # create 5 sessions in various states
 
 | Environment variable | Default | Description |
 |---|---|---|
-| `SESSION_DASHBOARD_URL` | `http://localhost:3210` | Override the URL the hook script posts to |
+| `SESSION_DASHBOARD_PORT` | `38473` | Server port |
+| `SESSION_DASHBOARD_URL` | `http://localhost:38473` | Override the URL the hook script posts to |
 
-To change the default port, edit `SERVER_PORT` in `shared/types.ts`.
+To change the default port, set `SESSION_DASHBOARD_PORT` for the server and `SESSION_DASHBOARD_URL` for hooks.
+
+```bash
+SESSION_DASHBOARD_PORT=4000 SESSION_DASHBOARD_URL=http://localhost:4000 node lib/cli.js install-service
+```
 
 ## How It Works
 

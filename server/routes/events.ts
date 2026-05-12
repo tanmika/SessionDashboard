@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import type { HookEventPayload } from '../../shared/types.js'
 import type { SessionManager } from '../services/session-manager.js'
 import { exportSessionText } from '../services/session-export.js'
+import { resolveTimeRange } from '../../shared/time-range.js'
 
 function parseBoundedInt(
   value: unknown,
@@ -87,10 +88,25 @@ export function createEventRoutes(sessionManager: SessionManager, db: Database.D
   router.get('/sessions/:id/export', (req, res) => {
     const mode = req.query.mode === 'insights' ? 'insights' : 'conversation'
     const depth = parseExportDepth(req.query.depth)
+    let range
+    try {
+      range = resolveTimeRange({
+        range: typeof req.query.range === 'string' ? req.query.range : undefined,
+        since: typeof req.query.since === 'string' ? req.query.since : undefined,
+        until: typeof req.query.until === 'string' ? req.query.until : undefined,
+      })
+    } catch (error) {
+      res.status(400).json({
+        ok: false,
+        error: error instanceof Error ? error.message : 'Invalid time range.',
+      })
+      return
+    }
     const result = exportSessionText(db, {
       sessionId: req.params.id,
       mode,
       depth,
+      range,
     })
 
     if (!result.ok) {

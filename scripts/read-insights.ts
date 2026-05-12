@@ -5,23 +5,30 @@
  * Designed for AI consumption: after context compression, a subagent runs this
  * tool to recover prior session insights.
  *
- * Usage: npx tsx scripts/read-insights.ts [options]
+ * Usage: session-dashboard insights [options]
  * Run with --help for full option list.
  */
 
 import Database from 'better-sqlite3'
+import { resolve } from 'node:path'
 import { getDbPath } from '../shared/config.js'
+import { resolveTimeRange, type TimeRange } from '../shared/time-range.js'
 
 const DB_PATH = getDbPath()
 
 interface Args {
   help: boolean
   session?: string
+  cwd?: string
+  range?: string
+  since?: string
+  until?: string
   limit: number
   offset: number
   grep?: string
   chain: boolean
   list: boolean
+  all: boolean
   json: boolean
 }
 
@@ -34,6 +41,11 @@ type SessionRow = {
   last_activity: string
   created_at: string
   predecessor_id: string
+}
+
+type ListedSession = SessionRow & {
+  matched_insights_count?: number
+  latest_matched_insight_at?: string
 }
 
 type InsightSource = 'transcript' | 'hook' | 'user'
@@ -49,39 +61,73 @@ type InsightRow = {
 const HELP = `
 Session Dashboard — Insight Recovery CLI
 
-Usage: npx tsx scripts/read-insights.ts [--session <id>] [options]
+Usage:
+  session-dashboard insights --list [filters]
+  session-dashboard insights --session <id> [filters]
 
 Session selection:
-  --session <id>     Session ID (supports prefix match, e.g. "a1b2")
-                    Optional when used with --list (lists recent sessions)
+  --session <id>     Exact session id or unique prefix
+  --list             List sessions instead of printing insight content.
+                     Defaults to the current directory and subdirectories.
+  --cwd <path>       With --list, include sessions in this directory and subdirectories.
+                     Aliases: --dir, --directory
+  --all              With --list, search sessions across all directories
 
-Options:
-  --limit <n>        Max primary insights to return (default: 50)
-  --offset <n>       Skip first n primary insights (newest first)
-  --grep <pattern>   Filter primary insights by regex pattern (case-insensitive)
+Search and time filters:
+  --grep <regex>     Search primary insights, case-insensitive.
+                     With --list, searches across matching sessions.
+                     User prompts are not counted as grep matches.
+  --range <name>     today | yesterday | week | this-week | last-week
+  --since <time>     Include records at or after this time (ISO or YYYY-MM-DD)
+  --until <time>     Exclude records at or after this time (ISO or YYYY-MM-DD)
+                     Time ranges use [since, until). YYYY-MM-DD means local midnight.
+
+Output:
+  --limit <n>        Max sessions for --list, or max primary insights for content view (default: 50)
+  --offset <n>       Skip first n primary insights in content view (newest first)
   --chain            Include predecessor sessions' insights (merged, newest first)
-  --list             List matching sessions instead of showing insights
   --json             Output as JSON
   --help             Show this help
 
 Examples:
-  # List recent sessions
-  npx tsx scripts/read-insights.ts --list
+  # List recent sessions in the current directory
+  session-dashboard insights --list
+
+  # List recent sessions across all directories
+  session-dashboard insights --list --all
 
   # List sessions matching a prefix
-  npx tsx scripts/read-insights.ts --session a1b2 --list
+  session-dashboard insights --session a1b2 --list
+
+  # List sessions under a workspace/project directory
+  session-dashboard insights --cwd /path/to/project --list
+
+  # List sessions changed this week
+  session-dashboard insights --list --range week
+
+  # List sessions changed in a custom time range
+  session-dashboard insights --list --since 2026-05-04 --until 2026-05-11
+
+  # List sessions whose primary insights mention a keyword
+  session-dashboard insights --list --grep "outer glow"
+
+  # Search all directories by keyword
+  session-dashboard insights --list --all --grep "outer glow"
+
+  # Search by keyword inside a directory and time range
+  session-dashboard insights --cwd /path/to/project --list --grep "outer glow" --range week
 
   # Read latest 30 primary insights (+ attached user prompts)
-  npx tsx scripts/read-insights.ts --session a1b2c3d4 --limit 30
+  session-dashboard insights --session a1b2c3d4 --limit 30
 
-  # Search for keyword
-  npx tsx scripts/read-insights.ts --session a1b2 --grep "pagination"
+  # Search within one session's primary insights
+  session-dashboard insights --session a1b2 --grep "pagination"
 
   # Read with predecessor chain
-  npx tsx scripts/read-insights.ts --session a1b2 --chain --limit 50
+  session-dashboard insights --session a1b2 --chain --limit 50
 
   # Paginate: get next page
-  npx tsx scripts/read-insights.ts --session a1b2 --limit 30 --offset 30
+  session-dashboard insights --session a1b2 --limit 30 --offset 30
 `.trim()
 
 function parseArgs(argvInput?: string[]): Args {
@@ -92,6 +138,7 @@ function parseArgs(argvInput?: string[]): Args {
     offset: 0,
     chain: false,
     list: false,
+    all: false,
     json: false,
   }
 
@@ -102,6 +149,20 @@ function parseArgs(argvInput?: string[]): Args {
         break
       case '--session':
         args.session = argv[++i]
+        break
+      case '--cwd':
+      case '--dir':
+      case '--directory':
+        args.cwd = argv[++i]
+        break
+      case '--range':
+        args.range = argv[++i]
+        break
+      case '--since':
+        args.since = argv[++i]
+        break
+      case '--until':
+        args.until = argv[++i]
         break
       case '--limit':
         args.limit = parseInt(argv[++i], 10)
@@ -117,6 +178,9 @@ function parseArgs(argvInput?: string[]): Args {
         break
       case '--list':
         args.list = true
+        break
+      case '--all':
+        args.all = true
         break
       case '--json':
         args.json = true
@@ -163,12 +227,157 @@ function openDb(): Database.Database {
 }
 
 function findSessions(db: Database.Database, sessionPrefix: string): SessionRow[] {
+  const exact = db.prepare(
+    `SELECT session_id, cwd, state, alias, source, last_activity, created_at, predecessor_id
+     FROM sessions
+     WHERE session_id = ?`
+  ).get(sessionPrefix) as SessionRow | undefined
+  if (exact) return [exact]
+
   return db.prepare(
     `SELECT session_id, cwd, state, alias, source, last_activity, created_at, predecessor_id
      FROM sessions
-     WHERE session_id = ? OR session_id LIKE ?
+     WHERE session_id LIKE ?
      ORDER BY last_activity DESC`
-  ).all(sessionPrefix, `${sessionPrefix}%`) as SessionRow[]
+  ).all(`${sessionPrefix}%`) as SessionRow[]
+}
+
+function findAllSessions(db: Database.Database): SessionRow[] {
+  return db.prepare(
+    `SELECT session_id, cwd, state, alias, source, last_activity, created_at, predecessor_id
+     FROM sessions
+     ORDER BY last_activity DESC`
+  ).all() as SessionRow[]
+}
+
+function normalizeCwdArg(cwd: string): string {
+  return resolve(cwd)
+}
+
+function findAllSessionsByCwd(db: Database.Database, cwd: string): SessionRow[] {
+  const normalized = normalizeCwdArg(cwd)
+  const nestedPrefix = `${normalized}/`
+  return db.prepare(
+    `SELECT session_id, cwd, state, alias, source, last_activity, created_at, predecessor_id
+     FROM sessions
+     WHERE cwd = ? OR substr(cwd, 1, ?) = ?
+     ORDER BY last_activity DESC`
+  ).all(normalized, nestedPrefix.length, nestedPrefix) as SessionRow[]
+}
+
+function findSessionsByCwd(db: Database.Database, cwd: string, limit: number): SessionRow[] {
+  const normalized = normalizeCwdArg(cwd)
+  const nestedPrefix = `${normalized}/`
+  return db.prepare(
+    `SELECT session_id, cwd, state, alias, source, last_activity, created_at, predecessor_id
+     FROM sessions
+     WHERE cwd = ? OR substr(cwd, 1, ?) = ?
+     ORDER BY last_activity DESC
+     LIMIT ?`
+  ).all(normalized, nestedPrefix.length, nestedPrefix, limit) as SessionRow[]
+}
+
+function buildRangePredicate(range: TimeRange, alias: string): { sql: string; params: string[] } {
+  const clauses: string[] = []
+  const params: string[] = []
+  if (range.since) {
+    clauses.push(`${alias}.timestamp >= ?`)
+    params.push(range.since)
+  }
+  if (range.until) {
+    clauses.push(`${alias}.timestamp < ?`)
+    params.push(range.until)
+  }
+  return { sql: clauses.join(' AND '), params }
+}
+
+function buildSessionActivityRangePredicate(range: TimeRange): { sql: string; params: string[] } {
+  const lastActivityClauses: string[] = []
+  const params: string[] = []
+  if (range.since) {
+    lastActivityClauses.push('last_activity >= ?')
+    params.push(range.since)
+  }
+  if (range.until) {
+    lastActivityClauses.push('last_activity < ?')
+    params.push(range.until)
+  }
+
+  const insightRange = buildRangePredicate(range, 'i')
+  const eventRange = buildRangePredicate(range, 'e')
+  return {
+    sql: `(
+       (${lastActivityClauses.join(' AND ')})
+       OR EXISTS (
+         SELECT 1 FROM insights i
+         WHERE i.session_id = sessions.session_id AND ${insightRange.sql}
+       )
+       OR EXISTS (
+         SELECT 1 FROM events e
+         WHERE e.session_id = sessions.session_id AND ${eventRange.sql}
+       )
+     )`,
+    params: [
+      ...params,
+      ...insightRange.params,
+      ...eventRange.params,
+    ],
+  }
+}
+
+function buildSessionRangeChangedAtExpression(range: TimeRange): { sql: string; params: string[] } {
+  const sessionCaseClauses: string[] = []
+  const sessionParams: string[] = []
+  if (range.since) {
+    sessionCaseClauses.push('last_activity >= ?')
+    sessionParams.push(range.since)
+  }
+  if (range.until) {
+    sessionCaseClauses.push('last_activity < ?')
+    sessionParams.push(range.until)
+  }
+
+  const insightRange = buildRangePredicate(range, 'i2')
+  const eventRange = buildRangePredicate(range, 'e2')
+  return {
+    sql: `max(
+       CASE WHEN ${sessionCaseClauses.join(' AND ')} THEN last_activity ELSE '' END,
+       COALESCE((
+         SELECT max(i2.timestamp) FROM insights i2
+         WHERE i2.session_id = sessions.session_id AND ${insightRange.sql}
+       ), ''),
+       COALESCE((
+         SELECT max(e2.timestamp) FROM events e2
+         WHERE e2.session_id = sessions.session_id AND ${eventRange.sql}
+       ), '')
+     )`,
+    params: [
+      ...sessionParams,
+      ...insightRange.params,
+      ...eventRange.params,
+    ],
+  }
+}
+
+function findSessionsByCwdAndRange(db: Database.Database, cwd: string, range: TimeRange, limit: number): SessionRow[] {
+  const normalized = normalizeCwdArg(cwd)
+  const nestedPrefix = `${normalized}/`
+  const activity = buildSessionActivityRangePredicate(range)
+  const changedAt = buildSessionRangeChangedAtExpression(range)
+  return db.prepare(
+    `SELECT session_id, cwd, state, alias, source, last_activity, created_at, predecessor_id
+     FROM sessions
+     WHERE (cwd = ? OR substr(cwd, 1, ?) = ?) AND ${activity.sql}
+     ORDER BY ${changedAt.sql} DESC, last_activity DESC
+     LIMIT ?`
+  ).all(
+    normalized,
+    nestedPrefix.length,
+    nestedPrefix,
+    ...activity.params,
+    ...changedAt.params,
+    limit
+  ) as SessionRow[]
 }
 
 function listRecentSessions(db: Database.Database, limit: number): SessionRow[] {
@@ -178,6 +387,27 @@ function listRecentSessions(db: Database.Database, limit: number): SessionRow[] 
      ORDER BY last_activity DESC
      LIMIT ?`
   ).all(limit) as SessionRow[]
+}
+
+function listSessionsByRange(db: Database.Database, range: TimeRange, limit: number): SessionRow[] {
+  const activity = buildSessionActivityRangePredicate(range)
+  const changedAt = buildSessionRangeChangedAtExpression(range)
+  return db.prepare(
+    `SELECT session_id, cwd, state, alias, source, last_activity, created_at, predecessor_id
+     FROM sessions
+     WHERE ${activity.sql}
+     ORDER BY ${changedAt.sql} DESC, last_activity DESC
+     LIMIT ?`
+  ).all(...activity.params, ...changedAt.params, limit) as SessionRow[]
+}
+
+function filterSessionsByRange(db: Database.Database, sessions: SessionRow[], range: TimeRange): SessionRow[] {
+  return sessions
+    .filter((session) => hasChangedInRange(db, session, range))
+    .sort((a, b) => (
+      getChangedAtInRange(db, b, range).localeCompare(getChangedAtInRange(db, a, range)) ||
+      b.last_activity.localeCompare(a.last_activity)
+    ))
 }
 
 function getChain(db: Database.Database, startSessionId: string): string[] {
@@ -198,7 +428,115 @@ function getChain(db: Database.Database, startSessionId: string): string[] {
   return chain
 }
 
-function cmdList(db: Database.Database, sessions: SessionRow[], args: Args) {
+function countBySource(db: Database.Database, sessionId: string, sourcePredicate: string, range?: TimeRange): number {
+  const clauses = [`session_id = ?`, sourcePredicate]
+  const params: Array<string> = [sessionId]
+  if (range?.since) {
+    clauses.push('timestamp >= ?')
+    params.push(range.since)
+  }
+  if (range?.until) {
+    clauses.push('timestamp < ?')
+    params.push(range.until)
+  }
+  return (db.prepare(
+    `SELECT COUNT(*) as count FROM insights WHERE ${clauses.join(' AND ')}`
+  ).get(...params) as { count: number }).count
+}
+
+function hasChangedInRange(db: Database.Database, session: SessionRow, range?: TimeRange): boolean {
+  if (!range) return false
+  if ((!range.since || session.last_activity >= range.since) && (!range.until || session.last_activity < range.until)) {
+    return true
+  }
+
+  const insightRange = buildRangePredicate(range, 'insights')
+  const eventRange = buildRangePredicate(range, 'events')
+  const insightChanged = (db.prepare(
+    `SELECT 1 FROM insights WHERE session_id = ? AND ${insightRange.sql} LIMIT 1`
+  ).get(session.session_id, ...insightRange.params) as unknown) != null
+  if (insightChanged) return true
+
+  return (db.prepare(
+    `SELECT 1 FROM events WHERE session_id = ? AND ${eventRange.sql} LIMIT 1`
+  ).get(session.session_id, ...eventRange.params) as unknown) != null
+}
+
+function getChangedAtInRange(db: Database.Database, session: SessionRow, range: TimeRange): string {
+  let changedAt = ''
+  if ((!range.since || session.last_activity >= range.since) && (!range.until || session.last_activity < range.until)) {
+    changedAt = session.last_activity
+  }
+
+  const insightRange = buildRangePredicate(range, 'insights')
+  const latestInsight = (db.prepare(
+    `SELECT max(timestamp) as timestamp FROM insights WHERE session_id = ? AND ${insightRange.sql}`
+  ).get(session.session_id, ...insightRange.params) as { timestamp: string | null }).timestamp
+  if (latestInsight && latestInsight > changedAt) changedAt = latestInsight
+
+  const eventRange = buildRangePredicate(range, 'events')
+  const latestEvent = (db.prepare(
+    `SELECT max(timestamp) as timestamp FROM events WHERE session_id = ? AND ${eventRange.sql}`
+  ).get(session.session_id, ...eventRange.params) as { timestamp: string | null }).timestamp
+  if (latestEvent && latestEvent > changedAt) changedAt = latestEvent
+
+  return changedAt
+}
+
+function compileGrep(pattern: string): RegExp {
+  if (pattern.length === 0) {
+    console.error('Error: --grep requires a non-empty pattern.')
+    process.exit(1)
+  }
+  try {
+    return new RegExp(pattern, 'i')
+  } catch {
+    console.error(`Error: invalid regex pattern "${pattern}"`)
+    process.exit(1)
+  }
+}
+
+function primaryInsightRowsForSession(db: Database.Database, sessionId: string, range?: TimeRange): Array<{ content: string; timestamp: string }> {
+  const clauses = [`session_id = ?`, `source != 'user'`]
+  const params: string[] = [sessionId]
+  if (range?.since) {
+    clauses.push('timestamp >= ?')
+    params.push(range.since)
+  }
+  if (range?.until) {
+    clauses.push('timestamp < ?')
+    params.push(range.until)
+  }
+  return db.prepare(
+    `SELECT content, timestamp FROM insights
+     WHERE ${clauses.join(' AND ')}
+     ORDER BY timestamp DESC, id DESC`
+  ).all(...params) as Array<{ content: string; timestamp: string }>
+}
+
+function filterSessionsByGrep(db: Database.Database, sessions: SessionRow[], pattern: string, range?: TimeRange): ListedSession[] {
+  const re = compileGrep(pattern)
+  const matched: ListedSession[] = []
+
+  for (const session of sessions) {
+    const hits = primaryInsightRowsForSession(db, session.session_id, range)
+      .filter((insight) => re.test(insight.content))
+    if (hits.length === 0) continue
+    matched.push({
+      ...session,
+      matched_insights_count: hits.length,
+      latest_matched_insight_at: hits[0].timestamp,
+    })
+  }
+
+  return matched.sort((a, b) => (
+    (b.latest_matched_insight_at || '').localeCompare(a.latest_matched_insight_at || '') ||
+    (b.matched_insights_count || 0) - (a.matched_insights_count || 0) ||
+    b.last_activity.localeCompare(a.last_activity)
+  ))
+}
+
+function cmdList(db: Database.Database, sessions: ListedSession[], args: Args, range?: TimeRange) {
   const stmtPrimaryCount = db.prepare(
     `SELECT COUNT(*) as count FROM insights
      WHERE session_id = ? AND source != 'user'`
@@ -213,8 +551,21 @@ function cmdList(db: Database.Database, sessions: SessionRow[], args: Args) {
       ...s,
       insights_count: (stmtPrimaryCount.get(s.session_id) as { count: number }).count,
       user_prompts_count: (stmtUserCount.get(s.session_id) as { count: number }).count,
+      ...(range ? {
+        changed_in_range: hasChangedInRange(db, s, range),
+        new_insights_in_range: countBySource(db, s.session_id, `source != 'user'`, range),
+        new_user_prompts_in_range: countBySource(db, s.session_id, `source = 'user'`, range),
+      } : {}),
+      ...(args.grep ? {
+        matched_insights_count: s.matched_insights_count || 0,
+        latest_matched_insight_at: s.latest_matched_insight_at,
+      } : {}),
     }))
-    console.log(JSON.stringify(data, null, 2))
+    console.log(JSON.stringify(range || args.grep ? {
+      ...(range ? { range } : {}),
+      ...(args.grep ? { grep: args.grep } : {}),
+      sessions: data,
+    } : data, null, 2))
     return
   }
 
@@ -222,21 +573,33 @@ function cmdList(db: Database.Database, sessions: SessionRow[], args: Args) {
     'SESSION_ID'.padEnd(12) +
     'STATE'.padEnd(12) +
     'SOURCE'.padEnd(8) +
+    (args.grep ? 'HITS'.padEnd(8) : '') +
     'INSIGHTS'.padEnd(10) +
     'USER'.padEnd(8) +
     'LAST_ACTIVE'.padEnd(13) +
     'ALIAS / CWD'
   )
+  if (range) {
+    console.log(`[range: ${range.since || '(beginning)'} to ${range.until || '(open)'}]`)
+  }
+  if (args.grep) {
+    console.log(`[grep: "${args.grep}"]`)
+  }
   console.log('─'.repeat(80))
 
   for (const s of sessions) {
-    const insightCount = (stmtPrimaryCount.get(s.session_id) as { count: number }).count
-    const userCount = (stmtUserCount.get(s.session_id) as { count: number }).count
+    const insightCount = range
+      ? countBySource(db, s.session_id, `source != 'user'`, range)
+      : (stmtPrimaryCount.get(s.session_id) as { count: number }).count
+    const userCount = range
+      ? countBySource(db, s.session_id, `source = 'user'`, range)
+      : (stmtUserCount.get(s.session_id) as { count: number }).count
     const label = s.alias || s.cwd
     console.log(
       s.session_id.slice(0, 10).padEnd(12) +
       s.state.padEnd(12) +
       s.source.padEnd(8) +
+      (args.grep ? String(s.matched_insights_count || 0).padEnd(8) : '') +
       String(insightCount).padEnd(10) +
       String(userCount).padEnd(8) +
       formatRelative(s.last_activity).padEnd(13) +
@@ -254,11 +617,23 @@ function cmdInsights(db: Database.Database, targetSession: SessionRow, args: Arg
     : [targetSession.session_id]
 
   const placeholders = sessionIds.map(() => '?').join(',')
+  const range = resolveTimeRange({ range: args.range, since: args.since, until: args.until })
+  const rangeClauses: string[] = []
+  const rangeParams: string[] = []
+  if (range?.since) {
+    rangeClauses.push('timestamp >= ?')
+    rangeParams.push(range.since)
+  }
+  if (range?.until) {
+    rangeClauses.push('timestamp < ?')
+    rangeParams.push(range.until)
+  }
   const allInsights = db.prepare(
     `SELECT id, content, timestamp, source, session_id as source_session FROM insights
      WHERE session_id IN (${placeholders})
+     ${rangeClauses.length > 0 ? `AND ${rangeClauses.join(' AND ')}` : ''}
      ORDER BY timestamp DESC, id DESC`
-  ).all(...sessionIds) as InsightRow[]
+  ).all(...sessionIds, ...rangeParams) as InsightRow[]
 
   const allPrimaryInsights = allInsights.filter(ins => ins.source !== 'user')
   const totalPrimaryAvailable = allPrimaryInsights.length
@@ -319,6 +694,7 @@ function cmdInsights(db: Database.Database, targetSession: SessionRow, args: Arg
     totalUserPrompts,
     isChain: args.chain,
     sessionCount: sessionIds.length,
+    range,
   })
 }
 
@@ -330,6 +706,7 @@ interface OutputMeta {
   totalUserPrompts: number
   isChain: boolean
   sessionCount: number
+  range?: TimeRange
 }
 
 function outputInsights(
@@ -360,6 +737,7 @@ function outputInsights(
       offset: args.offset,
       limit: args.limit,
       ...(args.grep ? { grep: args.grep } : {}),
+      ...(meta.range ? { range: meta.range } : {}),
       ...(meta.isChain ? { chain_sessions: meta.sessionCount } : {}),
       ...(newestTimestamp ? { newest_timestamp: newestTimestamp } : {}),
       ...(oldestTimestamp ? { oldest_timestamp: oldestTimestamp } : {}),
@@ -387,6 +765,9 @@ function outputInsights(
 
   if (meta.isChain) {
     console.log(`[chain: ${meta.sessionCount} sessions]`)
+  }
+  if (meta.range) {
+    console.log(`[range: ${meta.range.since || '(beginning)'} to ${meta.range.until || '(open)'}]`)
   }
   console.log()
 
@@ -441,10 +822,82 @@ export function main(argvInput?: string[]) {
     process.exit(0)
   }
 
+  let range: TimeRange | undefined
+  try {
+    range = resolveTimeRange({ range: args.range, since: args.since, until: args.until })
+  } catch (error) {
+    console.error(error instanceof Error ? `Error: ${error.message}` : 'Error: invalid time range.')
+    process.exit(1)
+  }
+
+  if (args.all && !args.list) {
+    console.error('Error: --all is supported with --list. Use --help for usage.')
+    process.exit(1)
+  }
+
+  if (args.all && args.cwd) {
+    console.error('Error: --all cannot be combined with --cwd/--dir/--directory.')
+    process.exit(1)
+  }
+
+  if (args.all && args.session) {
+    console.error('Error: --all cannot be combined with --session. --session is already an explicit selection.')
+    process.exit(1)
+  }
+
   const db = openDb()
 
+  if (args.cwd) {
+    if (!args.list) {
+      console.error('Error: --cwd is supported with --list. Use --help for usage.')
+      db.close()
+      process.exit(1)
+    }
+    const candidates = args.grep
+      ? findAllSessionsByCwd(db, args.cwd)
+      : range
+        ? findSessionsByCwdAndRange(db, args.cwd, range, args.limit)
+        : findSessionsByCwd(db, args.cwd, args.limit)
+    const listed = args.grep
+      ? filterSessionsByGrep(
+        db,
+        range ? filterSessionsByRange(db, candidates, range) : candidates,
+        args.grep,
+        range
+      ).slice(0, args.limit)
+      : candidates
+    cmdList(
+      db,
+      listed,
+      args,
+      range
+    )
+    db.close()
+    return
+  }
+
   if (!args.session && args.list) {
-    cmdList(db, listRecentSessions(db, args.limit), args)
+    const defaultCwd = args.all ? undefined : process.cwd()
+    const candidates = args.grep
+      ? defaultCwd
+        ? findAllSessionsByCwd(db, defaultCwd)
+        : findAllSessions(db)
+      : range
+        ? defaultCwd
+          ? findSessionsByCwdAndRange(db, defaultCwd, range, args.limit)
+          : listSessionsByRange(db, range, args.limit)
+        : defaultCwd
+          ? findSessionsByCwd(db, defaultCwd, args.limit)
+          : listRecentSessions(db, args.limit)
+    const listed = args.grep
+      ? filterSessionsByGrep(
+        db,
+        range ? filterSessionsByRange(db, candidates, range) : candidates,
+        args.grep,
+        range
+      ).slice(0, args.limit)
+      : candidates
+    cmdList(db, listed, args, range)
     db.close()
     return
   }
@@ -468,7 +921,11 @@ export function main(argvInput?: string[]) {
   }
 
   if (args.list) {
-    cmdList(db, sessions, args)
+    const candidates = range ? filterSessionsByRange(db, sessions, range) : sessions
+    const listed = args.grep
+      ? filterSessionsByGrep(db, candidates, args.grep, range).slice(0, args.limit)
+      : candidates
+    cmdList(db, listed, args, range)
   } else {
     cmdInsights(db, sessions[0], args)
   }

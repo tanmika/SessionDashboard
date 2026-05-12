@@ -22,7 +22,7 @@ export const INSIGHT_USAGE_MANUAL = `## Session Insight Recovery（强制执行�
 
 ### 你的 session_id
 
-通过 SessionStart hook 自动注入（格式: "Your current session_id is: xxx"）。如果上下文中找不到，运行 \`session-dashboard insights --list\` 查看最近活跃 session。
+通过 SessionStart hook 自动注入（格式: "Your current session_id is: xxx"）。如果上下文中找不到，运行 \`session-dashboard insights --list\` 查看当前目录相关的最近活跃 session；需要跨目录查找时使用 \`session-dashboard insights --list --all\`。
 
 ### 执行步骤
 
@@ -41,7 +41,7 @@ session-dashboard insights --session <your-session-id> --limit 30 --offset 30
 session-dashboard insights --session <your-session-id> --chain --limit 50
 \`\`\`
 
-其他：\`--grep "关键词"\` 过滤、\`--list\` 查看 session 链。更多参数: \`session-dashboard insights --help\``
+其他：\`--grep "关键词"\` 过滤、\`--list\` 查看当前目录相关 session、\`--all\` 跨目录查看。更多参数: \`session-dashboard insights --help\``
 
 /** Claude Code specific additions (subagent pattern, output-style) */
 export const CLAUDE_SPECIFIC_NOTES = `

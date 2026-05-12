@@ -163,6 +163,13 @@ export interface SessionExportMessage {
   text: string
 }
 
+export interface SessionTranscriptRecord {
+  session_id: string
+  timestamp: string
+  role: 'user' | 'agent' | 'tool'
+  text: string
+}
+
 export interface SessionExportMissingSession {
   session_id: string
   display_name: string
@@ -177,6 +184,11 @@ export interface SessionExportData {
   content: string
   filename: string
   session_count: number
+  item_count: number
+  range?: {
+    since?: string
+    until?: string
+  }
 }
 
 export interface SessionExportFailure {
@@ -194,4 +206,3 @@ export interface SessionExportFailure {
 
 export const IDLE_THRESHOLD_MS = 3 * 60 * 1000 // 3 minutes
 export const CODEX_ENDED_THRESHOLD_MS = 30 * 60 * 1000 // 30 min idle → ended (Codex only)
-export const SERVER_PORT = 3210

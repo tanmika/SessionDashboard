@@ -2,7 +2,8 @@
 # Simulate multiple sessions for development/testing
 # Usage: ./scripts/dev-simulate.sh
 
-API="http://localhost:3210/api"
+PORT="${SESSION_DASHBOARD_PORT:-38473}"
+API="http://localhost:${PORT}/api"
 
 echo "Creating simulated sessions..."
 
@@ -57,4 +58,4 @@ echo "  $S3 → Waiting User (TanmiWorkspace)"
 echo "  $S4 → Ended (archive-cleanup)"
 echo "  $S5 → Active with subagent (photo-export)"
 echo ""
-echo "Open http://localhost:3210 or http://localhost:5173 to view."
+echo "Open http://localhost:${PORT} or http://localhost:5173 to view."

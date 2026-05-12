@@ -9,12 +9,13 @@ Session Dashboard 通过 Claude Code 的 hooks 机制接收会话事件。每次
 1. **启动 dashboard runtime**（页面关闭时 runtime 仍需持续运行，否则事件会丢失）：
    ```bash
    cd /Users/tanmika/WebProject/session-dashboard
-   npx tsx server/index.ts
+   npm run build
+   node lib/cli.js init
    ```
-   Runtime 默认监听 `http://localhost:3210`。
+   Runtime 默认监听 `http://localhost:38473`，并通过 macOS 后台服务自动启动。
 
 2. **打开 dashboard 页面**（可选，runtime 启动后随时打开）：
-   打开浏览器访问 `http://localhost:3210`
+   打开浏览器访问 `http://localhost:38473`
 
 ## 配置 hooks
 
@@ -90,7 +91,7 @@ Session Dashboard 通过 Claude Code 的 hooks 机制接收会话事件。每次
 ```bash
 #!/bin/bash
 PAYLOAD=$(cat)
-curl -s -X POST "http://localhost:3210/api/events" \
+curl -s -X POST "http://localhost:38473/api/events" \
   -H "Content-Type: application/json" \
   -d "$PAYLOAD" > /dev/null 2>&1 &
 exit 0
@@ -98,10 +99,10 @@ exit 0
 
 ## 自定义 runtime 端口
 
-如需修改端口，在 `shared/types.ts` 中修改 `SERVER_PORT`，同时更新 hook 脚本中的 URL，或设置环境变量：
+如需修改端口，为服务设置 `SESSION_DASHBOARD_PORT`，并为 hook 设置 `SESSION_DASHBOARD_URL`：
 
 ```bash
-SESSION_DASHBOARD_URL=http://localhost:4000 npx tsx server/index.ts
+SESSION_DASHBOARD_PORT=4000 SESSION_DASHBOARD_URL=http://localhost:4000 npx tsx server/index.ts
 ```
 
 ## 验证配置

@@ -8,10 +8,12 @@ import { resolve } from 'path'
 import { existsSync, readFileSync, writeFileSync, unlinkSync, openSync, mkdirSync, copyFileSync } from 'fs'
 import { homedir } from 'os'
 import { spawn, execSync } from 'child_process'
-import { getHomeDir, getPidPath, getLogPath, getPort } from '../shared/config.js'
+import http from 'http'
+import { getHomeDir, getPidPath, getLogPath, getPort, DEFAULT_PORT } from '../shared/config.js'
 import { INSIGHT_USAGE_MANUAL, CLAUDE_SPECIFIC_NOTES } from '../shared/insight-usage.js'
 
 const STARTUP_GRACE_MS = 800
+const LAUNCH_AGENT_LABEL = 'com.tanmika.session-dashboard'
 
 // ─── Version ───
 
@@ -36,8 +38,17 @@ Commands:
   start       Start the dashboard server in the background
   stop        Stop the running server
   status      Show server running status
-  insights    Read insights from the database (offline CLI)
-  export      Export session conversation or insight history to txt
+  install-service
+              Install and start the macOS background service
+  uninstall-service
+              Stop and remove the macOS background service
+  service-status
+              Show macOS background service status
+  insights    Read/search insight history. Try: session-dashboard insights --help
+              Key filters: --list, --cwd, --all, --grep, --range, --since, --until
+  records     Cut a raw conversation range to a file. Try: session-dashboard records cut --help
+  export      Export conversation or insights. Try: session-dashboard export --help
+              Key filters: --mode, --depth, --range, --since, --until
   open        Open the web UI in your default browser
   serve       Run the server in the foreground (for debugging)
 
@@ -47,8 +58,8 @@ Options:
 
 Environment:
   SESSION_DASHBOARD_HOME   Data directory (default: ~/.session-dashboard)
-  SESSION_DASHBOARD_PORT   Server port (default: 3210)
-  SESSION_DASHBOARD_URL    Hook target URL (default: http://localhost:3210)
+  SESSION_DASHBOARD_PORT   Server port (default: ${DEFAULT_PORT})
+  SESSION_DASHBOARD_URL    Hook target URL (default: http://localhost:${DEFAULT_PORT})
 `.trim()
 
 // ─── PID helpers ───
@@ -61,6 +72,15 @@ function readPid(): number | null {
   return pid
 }
 
+function removePidFile(): boolean {
+  try {
+    unlinkSync(getPidPath())
+    return true
+  } catch {
+    return false
+  }
+}
+
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -68,6 +88,69 @@ function isProcessAlive(pid: number): boolean {
   } catch {
     return false
   }
+}
+
+function getLaunchAgentPath(): string {
+  return resolve(homedir(), 'Library', 'LaunchAgents', `${LAUNCH_AGENT_LABEL}.plist`)
+}
+
+function getGuiDomain(): string {
+  const uid = process.getuid?.()
+  if (uid == null) {
+    throw new Error('launchd service commands require a POSIX user id')
+  }
+  return `gui/${uid}`
+}
+
+function launchctl(args: string[], stdio: 'ignore' | 'inherit' | 'pipe' = 'ignore'): string {
+  return execSync(['launchctl', ...args].map((part) => JSON.stringify(part)).join(' '), {
+    encoding: 'utf-8',
+    stdio,
+  }) as string
+}
+
+function getServiceInfo(): { installed: boolean; loaded: boolean; pid?: string; state?: string } {
+  if (!isMacOS()) return { installed: false, loaded: false }
+
+  const installed = existsSync(getLaunchAgentPath())
+  try {
+    const output = launchctl(['print', `${getGuiDomain()}/${LAUNCH_AGENT_LABEL}`], 'pipe')
+    return {
+      installed,
+      loaded: true,
+      pid: output.match(/\bpid = (\d+)/)?.[1],
+      state: output.match(/\bstate = ([^\n]+)/)?.[1]?.trim(),
+    }
+  } catch {
+    return { installed, loaded: false }
+  }
+}
+
+async function checkHealth(port = getPort()): Promise<{ ok: boolean; detail: string }> {
+  return new Promise((resolveHealth) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/health',
+      method: 'GET',
+      timeout: 800,
+    }, (res) => {
+      res.resume()
+      resolveHealth({
+        ok: res.statusCode === 200,
+        detail: res.statusCode ? `HTTP ${res.statusCode}` : 'no status',
+      })
+    })
+
+    req.on('timeout', () => {
+      req.destroy()
+      resolveHealth({ ok: false, detail: 'timeout' })
+    })
+    req.on('error', (error: NodeJS.ErrnoException) => {
+      resolveHealth({ ok: false, detail: error.code || error.message })
+    })
+    req.end()
+  })
 }
 
 // ─── Commands ───
@@ -94,6 +177,9 @@ async function cmdInit() {
 
   // 4. Inject insight recovery instructions into ~/.claude/CLAUDE.md
   setupClaudeMd()
+
+  // 5. Install login-time service on macOS
+  cmdInstallService()
 
   console.log('  ✓ Init complete.\n')
 }
@@ -206,7 +292,13 @@ async function cmdStart() {
   console.log(`[session-dashboard] log: ${logPath}`)
 }
 
-function cmdStop() {
+async function cmdStop() {
+  const service = getServiceInfo()
+  if (service.installed) {
+    cmdUninstallService()
+    return
+  }
+
   const pid = readPid()
   if (!pid) {
     console.log('[session-dashboard] not running (no PID file)')
@@ -215,21 +307,53 @@ function cmdStop() {
 
   if (!isProcessAlive(pid)) {
     console.log(`[session-dashboard] process ${pid} not found, cleaning up PID file`)
-    unlinkSync(getPidPath())
+    if (!removePidFile()) {
+      console.log(`  PID file could not be removed: ${getPidPath()}`)
+    }
     return
   }
 
   process.kill(pid, 'SIGTERM')
-  unlinkSync(getPidPath())
+  if (!removePidFile()) {
+    console.log(`  PID file could not be removed: ${getPidPath()}`)
+  }
   console.log(`[session-dashboard] stopped (PID: ${pid})`)
 }
 
-function cmdStatus() {
+async function cmdStatus() {
   const pid = readPid()
   const port = getPort()
+  const service = getServiceInfo()
+  const health = await checkHealth(port)
+
+  if (service.loaded) {
+    console.log(health.ok
+      ? '[session-dashboard] running via macOS service'
+      : '[session-dashboard] macOS service loaded, HTTP unavailable'
+    )
+    if (service.pid) console.log(`  PID:  ${service.pid}`)
+    if (service.state) console.log(`  State: ${service.state}`)
+    console.log(`  Port: ${port}`)
+    console.log(`  URL:  http://localhost:${port}`)
+    console.log(`  HTTP: ${health.ok ? 'ok' : health.detail}`)
+    console.log(`  Log:  ${getLogPath()}`)
+    console.log(`  Data: ${getHomeDir()}`)
+    if (pid && !isProcessAlive(pid)) {
+      console.log(`  Stale PID: ${pid}`)
+    }
+    return
+  }
 
   if (!pid) {
-    console.log('[session-dashboard] not running')
+    console.log(health.ok ? '[session-dashboard] running' : '[session-dashboard] not running')
+    if (service.installed) {
+      console.log(`  Service: installed but not loaded (${LAUNCH_AGENT_LABEL})`)
+    }
+    if (health.ok) {
+      console.log(`  Port: ${port}`)
+      console.log(`  URL:  http://localhost:${port}`)
+      console.log('  HTTP: ok')
+    }
     return
   }
 
@@ -238,12 +362,172 @@ function cmdStatus() {
     console.log(`  PID:  ${pid}`)
     console.log(`  Port: ${port}`)
     console.log(`  URL:  http://localhost:${port}`)
+    console.log(`  HTTP: ${health.ok ? 'ok' : health.detail}`)
     console.log(`  Log:  ${getLogPath()}`)
     console.log(`  Data: ${getHomeDir()}`)
   } else {
     console.log(`[session-dashboard] not running (stale PID: ${pid})`)
-    unlinkSync(getPidPath())
+    if (!removePidFile()) {
+      console.log(`  Stale PID file could not be removed: ${getPidPath()}`)
+    }
+    if (service.loaded) {
+      console.log(`  Service: running${service.pid ? ` (PID: ${service.pid})` : ''}`)
+    }
   }
+}
+
+// ─── macOS launchd service helpers ───
+
+function isMacOS(): boolean {
+  return process.platform === 'darwin'
+}
+
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
+
+function getServiceProgramArguments(): string[] {
+  const serverScript = resolve(import.meta.dirname, '..', 'lib', 'server.js')
+  return [process.execPath, serverScript]
+}
+
+function getLaunchAgentPlist(): string {
+  const args = getServiceProgramArguments()
+  const home = getHomeDir()
+  const logPath = getLogPath()
+  const port = String(getPort())
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LAUNCH_AGENT_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+${args.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join('\n')}
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SESSION_DASHBOARD_HOME</key>
+    <string>${xmlEscape(home)}</string>
+    <key>SESSION_DASHBOARD_PORT</key>
+    <string>${xmlEscape(port)}</string>
+    <key>SESSION_DASHBOARD_URL</key>
+    <string>http://localhost:${xmlEscape(port)}</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>${xmlEscape(resolve(import.meta.dirname, '..'))}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(logPath)}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(logPath)}</string>
+</dict>
+</plist>
+`
+}
+
+function bootstrapService(plistPath: string) {
+  try {
+    launchctl(['bootout', getGuiDomain(), plistPath])
+  } catch {
+    // Service may not be loaded yet.
+  }
+  launchctl(['bootstrap', getGuiDomain(), plistPath])
+  launchctl(['enable', `${getGuiDomain()}/${LAUNCH_AGENT_LABEL}`])
+  launchctl(['kickstart', '-k', `${getGuiDomain()}/${LAUNCH_AGENT_LABEL}`])
+}
+
+function cmdInstallService() {
+  if (process.argv.includes('--print-plist')) {
+    console.log(getLaunchAgentPlist())
+    return
+  }
+
+  if (!isMacOS()) {
+    console.log('[session-dashboard] launchd service is only available on macOS')
+    return
+  }
+
+  const serverScript = resolve(import.meta.dirname, '..', 'lib', 'server.js')
+  if (!existsSync(serverScript)) {
+    console.error(`Error: server bundle not found at ${serverScript}`)
+    console.error('Run "npm run build" first, then run "session-dashboard install-service".')
+    process.exit(1)
+  }
+
+  mkdirSync(resolve(getHomeDir(), 'data'), { recursive: true })
+  mkdirSync(resolve(homedir(), 'Library', 'LaunchAgents'), { recursive: true })
+
+  const plistPath = getLaunchAgentPath()
+  const nextPlist = getLaunchAgentPlist()
+  const currentPlist = existsSync(plistPath) ? readFileSync(plistPath, 'utf-8') : ''
+  if (currentPlist !== nextPlist) {
+    writeFileSync(plistPath, nextPlist)
+  }
+
+  bootstrapService(plistPath)
+  console.log(`[session-dashboard] service installed: ${LAUNCH_AGENT_LABEL}`)
+  console.log(`[session-dashboard] URL: http://localhost:${getPort()}`)
+  console.log(`[session-dashboard] log: ${getLogPath()}`)
+}
+
+function cmdUninstallService() {
+  if (!isMacOS()) {
+    console.log('[session-dashboard] launchd service is only available on macOS')
+    return
+  }
+
+  const plistPath = getLaunchAgentPath()
+  if (existsSync(plistPath)) {
+    try {
+      launchctl(['bootout', getGuiDomain(), plistPath])
+    } catch {
+      // Service may already be stopped.
+    }
+    unlinkSync(plistPath)
+    console.log(`[session-dashboard] service removed: ${LAUNCH_AGENT_LABEL}`)
+    return
+  }
+
+  console.log('[session-dashboard] service not installed')
+}
+
+async function cmdServiceStatus() {
+  if (!isMacOS()) {
+    console.log('[session-dashboard] launchd service is only available on macOS')
+    return
+  }
+
+  const service = getServiceInfo()
+  const health = await checkHealth()
+  if (service.loaded) {
+    console.log(health.ok
+      ? '[session-dashboard] service installed and reachable'
+      : '[session-dashboard] service installed, HTTP unavailable'
+    )
+    console.log(`  Label: ${LAUNCH_AGENT_LABEL}`)
+    console.log(`  State: ${service.state || 'unknown'}`)
+    if (service.pid) console.log(`  PID:   ${service.pid}`)
+    console.log(`  URL:   http://localhost:${getPort()}`)
+    console.log(`  HTTP:  ${health.ok ? 'ok' : health.detail}`)
+    console.log(`  Log:   ${getLogPath()}`)
+    return
+  }
+
+  console.log(service.installed
+    ? '[session-dashboard] service installed but not loaded'
+    : '[session-dashboard] service not installed'
+  )
 }
 
 async function cmdInsights() {
@@ -254,6 +538,31 @@ async function cmdInsights() {
 async function cmdExport() {
   const { main } = await import('../scripts/export-session.js')
   main(process.argv.slice(3))
+}
+
+async function cmdRecords() {
+  const subcommand = process.argv[3]
+  if (subcommand === 'cut') {
+    const { main } = await import('../scripts/cut-records.js')
+    main(process.argv.slice(4))
+    return
+  }
+
+  console.log(`
+Session Dashboard — Records CLI
+
+Usage:
+  session-dashboard records cut --from <text> --to <text> [options]
+
+Commands:
+  cut        Save a raw conversation range to a Markdown file
+
+Options:
+  --help    Show this help
+`.trim())
+  if (subcommand && subcommand !== '--help' && subcommand !== '-h') {
+    process.exit(1)
+  }
 }
 
 function cmdOpen() {
@@ -295,16 +604,28 @@ switch (command) {
     await cmdStart()
     break
   case 'stop':
-    cmdStop()
+    await cmdStop()
     break
   case 'status':
-    cmdStatus()
+    await cmdStatus()
+    break
+  case 'install-service':
+    cmdInstallService()
+    break
+  case 'uninstall-service':
+    cmdUninstallService()
+    break
+  case 'service-status':
+    await cmdServiceStatus()
     break
   case 'insights':
     await cmdInsights()
     break
   case 'export':
     await cmdExport()
+    break
+  case 'records':
+    await cmdRecords()
     break
   case 'open':
     cmdOpen()

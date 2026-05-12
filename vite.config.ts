@@ -2,6 +2,8 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 
+const dashboardPort = process.env.SESSION_DASHBOARD_PORT || '38473'
+
 export default defineConfig({
   plugins: [vue()],
   resolve: {
@@ -12,9 +14,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:3210',
+      '/api': `http://localhost:${dashboardPort}`,
       '/ws': {
-        target: 'ws://localhost:3210',
+        target: `ws://localhost:${dashboardPort}`,
         ws: true,
       },
     },

@@ -3,7 +3,7 @@
 # This script sends hook events to the local dashboard runtime.
 # Add this to your Claude Code hooks configuration.
 
-DASHBOARD_URL="${SESSION_DASHBOARD_URL:-http://localhost:3210}"
+DASHBOARD_URL="${SESSION_DASHBOARD_URL:-http://localhost:38473}"
 
 # Read JSON payload from stdin
 PAYLOAD=$(cat)
