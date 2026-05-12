@@ -9,6 +9,7 @@ import { SessionManager } from '../server/services/session-manager.js'
 import { exportSessionText } from '../server/services/session-export.js'
 import { TranscriptWatcher } from '../server/services/transcript-watcher.js'
 import { extractInsightBlocks, sanitizeUserInput } from '../server/utils/insight-extractor.js'
+import { generateChainId, isChainId } from '../shared/chain-id.js'
 
 const repoRoot = resolve(import.meta.dirname, '..')
 const nodeBin = process.execPath
@@ -1651,11 +1652,28 @@ function verifyChainColumn(tempRoot: string) {
   console.log('verify: chain column')
 }
 
+function verifyChainIdGenerator() {
+  const ids = new Set<string>()
+  for (let i = 0; i < 1000; i++) {
+    const id = generateChainId()
+    assert.match(id, /^chain_[abcdefghjkmnpqrstvwxyz0-9]{8}$/, `bad chain id: ${id}`)
+    assert(!ids.has(id), `chain id collision: ${id}`)
+    ids.add(id)
+  }
+  assert.equal(isChainId('chain_a3k7m2pq'), true)
+  assert.equal(isChainId('a3k7m2pq'), false)
+  assert.equal(isChainId('chain_a3k7m2p'), false)
+  assert.equal(isChainId('chain_a3k7m2pqz'), false)
+  assert.equal(isChainId('CHAIN_a3k7m2pq'), false)
+  console.log('verify: chain id generator')
+}
+
 async function main() {
   const tempRoot = mkdtempSync(join(tmpdir(), 'session-dashboard-smoke-'))
   try {
     verifyPackageManifest(tempRoot)
     verifyChainColumn(tempRoot)
+    verifyChainIdGenerator()
     verifyBuiltCli()
     verifyRuntimeDefaults()
     verifyServicePlist(tempRoot)
