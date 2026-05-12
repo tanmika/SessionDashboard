@@ -51,7 +51,7 @@ export class SessionManager {
   private stmtGetEventsPaged: Database.Statement
   private stmtGetEventsCount: Database.Statement
   private stmtCheckInsightExists: Database.Statement
-  private stmtLookupChainId: Database.Statement
+  private stmtGetChainId: Database.Statement
 
   constructor(private db: Database.Database) {
     this.transcriptWatcher = new TranscriptWatcher(
@@ -111,7 +111,7 @@ export class SessionManager {
     this.stmtCheckInsightExists = db.prepare(
       'SELECT 1 FROM insights WHERE session_id = ? AND content = ? AND source = ? LIMIT 1'
     )
-    this.stmtLookupChainId = db.prepare(
+    this.stmtGetChainId = db.prepare(
       'SELECT chain_id FROM sessions WHERE session_id = ?'
     )
 
@@ -650,11 +650,7 @@ export class SessionManager {
     source: 'claude' | 'codex' = 'claude',
     metadata?: { isSubagent?: boolean, parentSessionId?: string }
   ): Session {
-    const parentChainId = metadata?.parentSessionId
-      ? (this.sessions.get(metadata.parentSessionId)?.chain_id ||
-         this.lookupParentChainIdFromDb(metadata.parentSessionId))
-      : undefined
-    const chainId = parentChainId || generateChainId()
+    const chainId = this.resolveInitialChainId(metadata)
 
     const session: Session = {
       session_id: sessionId,
@@ -699,9 +695,21 @@ export class SessionManager {
     return session
   }
 
-  private lookupParentChainIdFromDb(parentId: string): string | undefined {
-    const row = this.stmtLookupChainId.get(parentId) as { chain_id?: string } | undefined
+  private getChainIdForSession(sessionId: string): string | undefined {
+    const row = this.stmtGetChainId.get(sessionId) as { chain_id?: string } | undefined
     return row?.chain_id || undefined
+  }
+
+  private resolveInitialChainId(metadata?: { parentSessionId?: string }): string {
+    const parentId = metadata?.parentSessionId
+    if (!parentId) return generateChainId()
+    const cached = this.sessions.get(parentId)?.chain_id
+    if (cached) return cached
+    const fromDb = this.getChainIdForSession(parentId)
+    if (fromDb) return fromDb
+    // Parent declared but its chain_id is unknown (orphan subagent — possible
+    // in race conditions or stale fixtures). Start a fresh chain for it.
+    return generateChainId()
   }
 
   private insertEventIfNew(
