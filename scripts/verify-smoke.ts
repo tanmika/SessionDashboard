@@ -1735,6 +1735,69 @@ function verifyChainIdAssignedOnInsert(tempRoot: string) {
   console.log('verify: chain id assigned on insert')
 }
 
+function verifySubagentInheritsChainOnLatePromotion(tempRoot: string) {
+  const dbPath = join(tempRoot, 'subagent-late-promote.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+
+  // Fixture: parent main session with a known chain_id, inserted directly so
+  // SessionManager loads it from DB at construction time.
+  insertSession(db, 'parent-main', {
+    cwd: '/tmp/late-promote',
+    transcriptPath: '',
+    source: 'codex',
+    chainId: 'chain_parmainx',
+  })
+
+  // The would-be-subagent session is ALSO inserted directly, without subagent
+  // metadata — simulating "we created it as a main session first, didn't know
+  // it was a subagent yet". Give it some chain_id that differs from the parent.
+  insertSession(db, 'late-sub', {
+    cwd: '/tmp/late-promote',
+    transcriptPath: '',
+    source: 'codex',
+    chainId: 'chain_oldchild',
+  })
+
+  const manager = new SessionManager(db)
+  try {
+    // Trigger the late-promotion path: 'late-sub' already exists (loaded from
+    // DB into the in-memory map by restoreFromDb), and now we deliver subagent
+    // metadata for it. The handler should hit the metadata-update branch in
+    // handleCodexSessionDiscovered, not createSession.
+    ;(manager as any).handleCodexSessionDiscovered(
+      'late-sub',
+      '/tmp/late-promote',
+      '',
+      '/tmp/late-promote-transcript.jsonl',
+      '2026-05-12T12:00:00.000Z',
+      { isSubagent: true, parentSessionId: 'parent-main' },
+    )
+
+    const row = db.prepare(
+      'SELECT chain_id, is_subagent, parent_session_id FROM sessions WHERE session_id = ?'
+    ).get('late-sub') as { chain_id: string; is_subagent: number; parent_session_id: string } | undefined
+    assert(row, 'late-sub row missing')
+    assert.equal(row.is_subagent, 1, 'late-sub should now be flagged as subagent')
+    assert.equal(row.parent_session_id, 'parent-main', 'late-sub should record its parent')
+    assert.equal(
+      row.chain_id,
+      'chain_parmainx',
+      `late-sub chain_id should be overwritten with parent's, got "${row.chain_id}"`
+    )
+
+    // In-memory consistency
+    const inMemory = manager.getSession('late-sub')
+    assert(inMemory, 'late-sub missing from in-memory map')
+    assert.equal(inMemory.chain_id, 'chain_parmainx', 'in-memory chain_id should match parent')
+    assert.equal(inMemory.is_subagent, true, 'in-memory is_subagent should be true')
+  } finally {
+    manager.destroy()
+    db.close()
+  }
+  console.log('verify: subagent inherits chain on late promotion')
+}
+
 function verifyChainInheritedFromPredecessor(tempRoot: string) {
   const dbPath = join(tempRoot, 'chain-inherit.db')
   const db = new Database(dbPath)
@@ -1804,6 +1867,7 @@ async function main() {
     verifyChainIdGenerator()
     verifyChainIdAssignedOnInsert(tempRoot)
     verifyChainInheritedFromPredecessor(tempRoot)
+    verifySubagentInheritsChainOnLatePromotion(tempRoot)
     verifyBuiltCli()
     verifyRuntimeDefaults()
     verifyServicePlist(tempRoot)

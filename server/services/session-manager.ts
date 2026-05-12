@@ -248,6 +248,18 @@ export class SessionManager {
       if (metadata.parentSessionId && existing.parent_session_id !== metadata.parentSessionId) {
         existing.parent_session_id = metadata.parentSessionId
         changed = true
+
+        // On late-promotion to subagent, also inherit the parent's chain_id.
+        // This is the second (and last) place chain_id may change after insert;
+        // the first is tryInheritFromPredecessor (Task 2.2).
+        // Guard against legacy parents with empty chain_id (pre-Stage-3-backfill)
+        // and against no-op writes when chains already match.
+        const parentChainId = this.sessions.get(metadata.parentSessionId)?.chain_id
+          || this.getChainIdForSession(metadata.parentSessionId)
+        if (parentChainId && parentChainId !== existing.chain_id) {
+          existing.chain_id = parentChainId
+          this.stmtSetChainId.run(parentChainId, existing.session_id)
+        }
       }
       if (displayName && existing.alias !== displayName) {
         existing.alias = displayName
