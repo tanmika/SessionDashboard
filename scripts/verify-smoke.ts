@@ -777,6 +777,107 @@ function verifyInsightsChainFlagParsing(tempRoot: string) {
   console.log('verify: insights chain flag parsing')
 }
 
+function verifyInsightsListChain(tempRoot: string) {
+  const tempHome = join(tempRoot, 'list-chain-home')
+  const dataDir = join(tempHome, 'data')
+  mkdirSync(dataDir, { recursive: true })
+  const dbPath = join(dataDir, 'dashboard.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+
+  // Chain A: two main sessions + one subagent (all share chain_aaaaaa11).
+  insertSession(db, 'chain-a-1', {
+    cwd: '/tmp/list-chain', transcriptPath: '', source: 'claude',
+    chainId: 'chain_aaaaaa11',
+  })
+  insertSession(db, 'chain-a-2', {
+    cwd: '/tmp/list-chain', transcriptPath: '', source: 'claude',
+    chainId: 'chain_aaaaaa11', predecessorId: 'chain-a-1',
+  })
+  insertSession(db, 'chain-a-sub', {
+    cwd: '/tmp/list-chain', transcriptPath: '', source: 'codex',
+    chainId: 'chain_aaaaaa11', isSubagent: true, parentSessionId: 'chain-a-1',
+  })
+  // Chain B: one main session, older (different chain).
+  insertSession(db, 'chain-b-1', {
+    cwd: '/tmp/list-chain', transcriptPath: '', source: 'claude',
+    chainId: 'chain_bbbbbb22',
+  })
+
+  // Fix timestamps so we have deterministic ordering.
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-09T08:00:00.000Z', '2026-05-09T09:00:00.000Z', 'chain-b-1')
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-10T08:00:00.000Z', '2026-05-10T09:00:00.000Z', 'chain-a-1')
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-11T08:00:00.000Z', '2026-05-11T09:00:00.000Z', 'chain-a-2')
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-11T09:30:00.000Z', '2026-05-11T10:00:00.000Z', 'chain-a-sub')
+
+  // Insights: 2 on main sessions of chain A, 1 on subagent of A, 1 on chain B.
+  insertInsight(db, 'chain-a-1', 'a1 insight', 'transcript', '2026-05-10T09:00:00.000Z')
+  insertInsight(db, 'chain-a-2', 'a2 insight', 'transcript', '2026-05-11T09:00:00.000Z')
+  insertInsight(db, 'chain-a-sub', 'subagent insight', 'transcript', '2026-05-11T09:30:00.000Z')
+  insertInsight(db, 'chain-b-1', 'b1 insight', 'transcript', '2026-05-09T09:00:00.000Z')
+  db.close()
+
+  const stdout = runCommand('node', [
+    'lib/cli.js', 'insights', '--list', '--chain', '--all', '--json',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+
+  const parsed = JSON.parse(stdout) as Array<{
+    chain_id: string
+    main_session_ids: string[]
+    subagent_session_ids: string[]
+    sessions_count: number
+    representative_session_id: string
+    insights_count: number
+    chain_started_at: string
+    chain_last_activity: string
+    cwd: string
+  }>
+
+  // Two chains in the result.
+  assert.equal(parsed.length, 2, `expected 2 chains, got ${parsed.length}`)
+
+  const chainA = parsed.find((c) => c.chain_id === 'chain_aaaaaa11')
+  const chainB = parsed.find((c) => c.chain_id === 'chain_bbbbbb22')
+  assert(chainA, 'chain_aaaaaa11 missing')
+  assert(chainB, 'chain_bbbbbb22 missing')
+
+  // Chain A: main区 = 2 sessions, subagent区 = 1 session.
+  assert.deepEqual(chainA!.main_session_ids.sort(), ['chain-a-1', 'chain-a-2'],
+    `chain A main sessions wrong: ${JSON.stringify(chainA!.main_session_ids)}`)
+  assert.deepEqual(chainA!.subagent_session_ids, ['chain-a-sub'],
+    `chain A subagent sessions wrong: ${JSON.stringify(chainA!.subagent_session_ids)}`)
+  // sessions_count = main区 only (subagents excluded by default per plan).
+  assert.equal(chainA!.sessions_count, 2,
+    `chain A sessions_count should be 2 (main only), got ${chainA!.sessions_count}`)
+  // Representative = latest main session by last_activity (chain-a-2 at 2026-05-11T09:00).
+  assert.equal(chainA!.representative_session_id, 'chain-a-2',
+    `chain A representative should be chain-a-2, got ${chainA!.representative_session_id}`)
+  // insights_count counts main区 only by default → 2 (a1 + a2, NOT subagent's).
+  assert.equal(chainA!.insights_count, 2,
+    `chain A insights_count should be 2 (main only), got ${chainA!.insights_count}`)
+  // Timestamps from main区 only.
+  assert.equal(chainA!.chain_started_at, '2026-05-10T08:00:00.000Z',
+    `chain A started_at should be earliest main session, got ${chainA!.chain_started_at}`)
+  assert.equal(chainA!.chain_last_activity, '2026-05-11T09:00:00.000Z',
+    `chain A last_activity should be latest main session, got ${chainA!.chain_last_activity}`)
+  assert.equal(chainA!.cwd, '/tmp/list-chain',
+    `chain A cwd should match main session cwd, got ${chainA!.cwd}`)
+
+  // Order: chain A is newer (2026-05-11) so it appears first.
+  assert.equal(parsed[0].chain_id, 'chain_aaaaaa11',
+    'order should be MAX(last_activity) DESC; chain A first')
+
+  // Chain B: only one main session, no subagents.
+  assert.equal(chainB!.main_session_ids.length, 1)
+  assert.equal(chainB!.subagent_session_ids.length, 0)
+  assert.equal(chainB!.insights_count, 1)
+  console.log('verify: insights list chain')
+}
+
 function verifyCodexHook() {
   const stdout = runCommand('bash', ['hooks/codex-session-hook.sh'], {
     env: { ...process.env, SESSION_DASHBOARD_URL: 'http://127.0.0.1:9' },
@@ -2103,6 +2204,7 @@ async function main() {
     verifyInsightsGrepList(tempRoot)
     verifyInsightsSessionExactPriority(tempRoot)
     verifyInsightsChainFlagParsing(tempRoot)
+    verifyInsightsListChain(tempRoot)
     verifyCodexHook()
     verifySessionRestore(tempRoot)
     verifySessionExport(tempRoot)

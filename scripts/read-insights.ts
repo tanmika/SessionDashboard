@@ -51,6 +51,18 @@ type ListedSession = SessionRow & {
   latest_matched_insight_at?: string
 }
 
+interface ChainSummary {
+  chain_id: string
+  main_session_ids: string[]
+  subagent_session_ids: string[]
+  sessions_count: number              // main区 count (default; widens if --include-subagents)
+  representative_session_id: string   // main session with MAX(last_activity)
+  insights_count: number              // main区 insights only by default
+  chain_started_at: string            // MIN(created_at) across main区
+  chain_last_activity: string         // MAX(last_activity) across main区
+  cwd: string                         // any main session's cwd (they all share it)
+}
+
 type InsightSource = 'transcript' | 'hook' | 'user'
 
 type InsightRow = {
@@ -562,6 +574,117 @@ function filterSessionsByGrep(db: Database.Database, sessions: SessionRow[], pat
   ))
 }
 
+function listChains(db: Database.Database, _args: Args): ChainSummary[] {
+  // Step 1: aggregate session metadata by chain_id.
+  // We only consider main区 (is_subagent = 0) for the headline fields:
+  // sessions_count, representative_session_id, chain_started_at, chain_last_activity, cwd.
+  // Subagent ids are listed in a separate array but excluded from the count.
+  const mainRows = db.prepare(`
+    SELECT
+      chain_id,
+      session_id,
+      cwd,
+      last_activity,
+      created_at
+    FROM sessions
+    WHERE chain_id != '' AND is_subagent = 0
+  `).all() as Array<{ chain_id: string; session_id: string; cwd: string; last_activity: string; created_at: string }>
+
+  const subagentRows = db.prepare(`
+    SELECT chain_id, session_id
+    FROM sessions
+    WHERE chain_id != '' AND is_subagent = 1
+  `).all() as Array<{ chain_id: string; session_id: string }>
+
+  // Group main rows by chain_id.
+  const chainsMap = new Map<string, ChainSummary>()
+  for (const row of mainRows) {
+    let chain = chainsMap.get(row.chain_id)
+    if (!chain) {
+      chain = {
+        chain_id: row.chain_id,
+        main_session_ids: [],
+        subagent_session_ids: [],
+        sessions_count: 0,
+        representative_session_id: '',
+        insights_count: 0,
+        chain_started_at: row.created_at,
+        chain_last_activity: row.last_activity,
+        cwd: row.cwd,
+      }
+      chainsMap.set(row.chain_id, chain)
+    }
+    chain.main_session_ids.push(row.session_id)
+    chain.sessions_count += 1
+    if (row.created_at < chain.chain_started_at) chain.chain_started_at = row.created_at
+    if (row.last_activity >= chain.chain_last_activity) {
+      chain.chain_last_activity = row.last_activity
+      chain.representative_session_id = row.session_id
+    }
+    // cwd: all main sessions in a chain should share cwd; keep the first.
+  }
+
+  // Initialize representative_session_id for chains with only one main session.
+  for (const chain of chainsMap.values()) {
+    if (!chain.representative_session_id && chain.main_session_ids.length > 0) {
+      chain.representative_session_id = chain.main_session_ids[0]
+    }
+  }
+
+  // Attach subagent ids.
+  for (const row of subagentRows) {
+    const chain = chainsMap.get(row.chain_id)
+    if (chain) chain.subagent_session_ids.push(row.session_id)
+  }
+
+  // Step 2: count main区 insights per chain.
+  if (chainsMap.size > 0) {
+    const chainIds = [...chainsMap.keys()]
+    const placeholders = chainIds.map(() => '?').join(',')
+    const insightCounts = db.prepare(`
+      SELECT s.chain_id, COUNT(i.id) AS cnt
+      FROM sessions s
+      LEFT JOIN insights i ON i.session_id = s.session_id
+      WHERE s.is_subagent = 0 AND s.chain_id IN (${placeholders})
+      GROUP BY s.chain_id
+    `).all(...chainIds) as Array<{ chain_id: string; cnt: number }>
+    for (const row of insightCounts) {
+      const chain = chainsMap.get(row.chain_id)
+      if (chain) chain.insights_count = row.cnt
+    }
+  }
+
+  // Sort by chain_last_activity DESC.
+  return [...chainsMap.values()].sort((a, b) => b.chain_last_activity.localeCompare(a.chain_last_activity))
+}
+
+function printChainList(chains: ChainSummary[]) {
+  console.log(
+    'CHAIN_ID'.padEnd(16) +
+    'SESSIONS'.padEnd(10) +
+    'INSIGHTS'.padEnd(10) +
+    'LAST_ACTIVE'.padEnd(13) +
+    'CWD'
+  )
+  console.log('─'.repeat(80))
+
+  for (const chain of chains) {
+    const sessionsLabel = chain.subagent_session_ids.length > 0
+      ? `${chain.sessions_count}+${chain.subagent_session_ids.length}`
+      : String(chain.sessions_count)
+    console.log(
+      chain.chain_id.padEnd(16) +
+      sessionsLabel.padEnd(10) +
+      String(chain.insights_count).padEnd(10) +
+      formatRelative(chain.chain_last_activity).padEnd(13) +
+      chain.cwd
+    )
+    if (chain.representative_session_id) {
+      console.log(`  ↳ representative: ${chain.representative_session_id.slice(0, 10)}`)
+    }
+  }
+}
+
 function cmdList(db: Database.Database, sessions: ListedSession[], args: Args, range?: TimeRange) {
   const stmtPrimaryCount = db.prepare(
     `SELECT COUNT(*) as count FROM insights
@@ -918,6 +1041,17 @@ export function main(argvInput?: string[]) {
       args,
       range
     )
+    db.close()
+    return
+  }
+
+  if (args.list && args.chain) {
+    const chains = listChains(db, args)
+    if (args.json) {
+      console.log(JSON.stringify(chains, null, 2))
+    } else {
+      printChainList(chains)
+    }
     db.close()
     return
   }
