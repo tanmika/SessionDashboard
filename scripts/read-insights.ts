@@ -575,11 +575,42 @@ function filterSessionsByGrep(db: Database.Database, sessions: SessionRow[], pat
   ))
 }
 
-function listChains(db: Database.Database, args: Args): ChainSummary[] {
+function listChains(db: Database.Database, args: Args, range?: TimeRange): ChainSummary[] {
   // Step 1: aggregate session metadata by chain_id.
   // We only consider main区 (is_subagent = 0) for the headline fields:
   // sessions_count, representative_session_id, chain_started_at, chain_last_activity, cwd.
   // Subagent ids are listed in a separate array but excluded from the count.
+  //
+  // Filter semantics: a chain is matched if at least one of its main-zone
+  // sessions matches the cwd/range filter. Subagent rows never bring a chain
+  // into the result — they are silently dropped if their parent chain is not
+  // already in the main set (see the subagentRows attach step below).
+  const mainWhereClauses: string[] = ["chain_id != ''", 'is_subagent = 0']
+  const mainParams: (string | number)[] = []
+
+  if (args.cwd) {
+    const normalized = normalizeCwdArg(args.cwd)
+    const nestedPrefix = `${normalized}/`
+    mainWhereClauses.push('(cwd = ? OR substr(cwd, 1, ?) = ?)')
+    mainParams.push(normalized, nestedPrefix.length, nestedPrefix)
+  } else if (!args.all) {
+    // Default: scope to process.cwd() — matches session-list's defaultCwd behavior.
+    const defaultCwd = process.cwd()
+    const nestedPrefix = `${defaultCwd}/`
+    mainWhereClauses.push('(cwd = ? OR substr(cwd, 1, ?) = ?)')
+    mainParams.push(defaultCwd, nestedPrefix.length, nestedPrefix)
+  }
+
+  if (range) {
+    // buildSessionActivityRangePredicate's SQL references sessions.session_id
+    // inside its EXISTS subqueries against insights/events, and uses
+    // last_activity as a column reference — both work because the FROM clause
+    // is unaliased `sessions`. This mirrors listSessionsByRange's usage.
+    const activity = buildSessionActivityRangePredicate(range)
+    mainWhereClauses.push(activity.sql)
+    mainParams.push(...activity.params)
+  }
+
   const mainRows = db.prepare(`
     SELECT
       chain_id,
@@ -588,8 +619,8 @@ function listChains(db: Database.Database, args: Args): ChainSummary[] {
       last_activity,
       created_at
     FROM sessions
-    WHERE chain_id != '' AND is_subagent = 0
-  `).all() as Array<{ chain_id: string; session_id: string; cwd: string; last_activity: string; created_at: string }>
+    WHERE ${mainWhereClauses.join(' AND ')}
+  `).all(...mainParams) as Array<{ chain_id: string; session_id: string; cwd: string; last_activity: string; created_at: string }>
 
   const subagentRows = db.prepare(`
     SELECT chain_id, session_id
@@ -704,11 +735,16 @@ function listChains(db: Database.Database, args: Args): ChainSummary[] {
   }
 
   // Sort by chain_last_activity DESC; tie-break by chain_id ASC for determinism.
-  return [...chainsMap.values()].sort((a, b) => {
+  const sorted = [...chainsMap.values()].sort((a, b) => {
     const ts = b.chain_last_activity.localeCompare(a.chain_last_activity)
     if (ts !== 0) return ts
     return a.chain_id.localeCompare(b.chain_id)
   })
+
+  // Apply --limit AFTER sort so the cap reflects the newest chains first.
+  // args.limit defaults to 50 (same as session-list); --grep filtering above
+  // already pruned non-matching chains, so this is the final cap.
+  return args.limit > 0 ? sorted.slice(0, args.limit) : sorted
 }
 
 function printChainList(chains: ChainSummary[], args?: Args) {
@@ -1068,25 +1104,23 @@ export function main(argvInput?: string[]) {
     process.exit(1)
   }
 
-  if (args.list && args.chain) {
-    // Filters not yet integrated with chain list mode (Task 4.4 territory).
-    // Explicit rejection is preferable to silent fall-through to session-list paths.
-    if (args.cwd) {
-      console.error('Error: --cwd is not yet supported with --list --chain (coming in a later task).')
-      process.exit(2)
-    }
-    if (args.range || args.since || args.until) {
-      console.error('Error: --range / --since / --until are not yet supported with --list --chain (coming in a later task).')
-      process.exit(2)
-    }
-  }
-
   if (args.chainId) {
     console.error('Error: reading insights by chain id is not yet implemented (coming in Stage 5).')
     process.exit(2)
   }
 
   const db = openDb()
+
+  if (args.list && args.chain) {
+    const chains = listChains(db, args, range)
+    if (args.json) {
+      console.log(JSON.stringify(chains, null, 2))
+    } else {
+      printChainList(chains, args)
+    }
+    db.close()
+    return
+  }
 
   if (args.cwd) {
     if (!args.list) {
@@ -1113,17 +1147,6 @@ export function main(argvInput?: string[]) {
       args,
       range
     )
-    db.close()
-    return
-  }
-
-  if (args.list && args.chain) {
-    const chains = listChains(db, args)
-    if (args.json) {
-      console.log(JSON.stringify(chains, null, 2))
-    } else {
-      printChainList(chains, args)
-    }
     db.close()
     return
   }

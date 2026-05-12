@@ -774,26 +774,25 @@ function verifyInsightsChainFlagParsing(tempRoot: string) {
     `--json must still produce JSON output: '--chain' must not have consumed it, got stdout: ${flagThenFlag.stdout.slice(0, 200)}`
   )
 
-  // Case E: --list --chain --cwd is explicitly rejected (Task 4.4 will integrate it).
-  const cwdCombo = spawnNode(
+  // Case E: --list --chain --cwd is now honored (Task 4.4 integrated it).
+  // Should NOT reject with "not yet supported".
+  const cwdNow = spawnNode(
     [join(repoRoot, 'lib/cli.js'), 'insights', '--list', '--chain', '--cwd', '/tmp/x'],
     { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
   )
-  assert.notEqual(cwdCombo.status, 0, '--list --chain --cwd should reject until Task 4.4')
   assert(
-    cwdCombo.stderr.includes('not yet supported'),
-    `--cwd + --list --chain should emit clear error, got: ${cwdCombo.stderr.slice(0, 200)}`
+    !cwdNow.stderr.includes('not yet supported'),
+    `--list --chain --cwd should be honored after Task 4.4, got stderr: ${cwdNow.stderr.slice(0, 200)}`
   )
 
-  // Case F: --list --chain --range is explicitly rejected.
-  const rangeCombo = spawnNode(
+  // Case F: --list --chain --range is now honored.
+  const rangeNow = spawnNode(
     [join(repoRoot, 'lib/cli.js'), 'insights', '--list', '--chain', '--range', 'week'],
     { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
   )
-  assert.notEqual(rangeCombo.status, 0, '--list --chain --range should reject until Task 4.4')
   assert(
-    rangeCombo.stderr.includes('not yet supported'),
-    `--range + --list --chain should emit clear error, got: ${rangeCombo.stderr.slice(0, 200)}`
+    !rangeNow.stderr.includes('not yet supported'),
+    `--list --chain --range should be honored after Task 4.4, got stderr: ${rangeNow.stderr.slice(0, 200)}`
   )
 
   console.log('verify: insights chain flag parsing')
@@ -1007,6 +1006,82 @@ function verifyInsightsListChainGrep(tempRoot: string) {
     `chain Z insights_count should be 3 (unfiltered), got ${chainZ.insights_count}`)
 
   console.log('verify: insights list chain grep')
+}
+
+function verifyInsightsListChainScopes(tempRoot: string) {
+  const tempHome = join(tempRoot, 'list-chain-scopes-home')
+  const dataDir = join(tempHome, 'data')
+  mkdirSync(dataDir, { recursive: true })
+  const dbPath = join(dataDir, 'dashboard.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+
+  // Chain A: main session in /tmp/scope-a, recent activity.
+  insertSession(db, 'a-main', {
+    cwd: '/tmp/scope-a', transcriptPath: '', source: 'claude',
+    chainId: 'chain_aaaaaa55',
+  })
+  // Chain B: main session in /tmp/scope-b/nested, recent activity.
+  insertSession(db, 'b-main', {
+    cwd: '/tmp/scope-b/nested', transcriptPath: '', source: 'claude',
+    chainId: 'chain_bbbbbb66',
+  })
+  // Chain C: main session in /tmp/scope-c, OLD activity (outside week range).
+  insertSession(db, 'c-main', {
+    cwd: '/tmp/scope-c', transcriptPath: '', source: 'claude',
+    chainId: 'chain_cccccc77',
+  })
+
+  const today = '2026-05-12T09:00:00.000Z'
+  const yesterday = '2026-05-11T09:00:00.000Z'
+  const longAgo = '2026-01-01T09:00:00.000Z'
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run(today, today, 'a-main')
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run(yesterday, yesterday, 'b-main')
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run(longAgo, longAgo, 'c-main')
+
+  db.close()
+
+  // --- Test 1: --cwd filters to nested directory ---
+  const cwdResult = runCommand('node', [
+    'lib/cli.js', 'insights', '--list', '--chain', '--cwd', '/tmp/scope-b', '--json',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  const cwdParsed = JSON.parse(cwdResult) as Array<{ chain_id: string }>
+  const cwdIds = cwdParsed.map((c) => c.chain_id)
+  assert.deepEqual(cwdIds, ['chain_bbbbbb66'],
+    `--cwd /tmp/scope-b should return only chain B (nested), got: ${JSON.stringify(cwdIds)}`)
+
+  // --- Test 2: --all returns all chains regardless of cwd ---
+  const allResult = runCommand('node', [
+    'lib/cli.js', 'insights', '--list', '--chain', '--all', '--json',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  const allIds = (JSON.parse(allResult) as Array<{ chain_id: string }>).map((c) => c.chain_id)
+  assert.deepEqual(allIds.sort(), ['chain_aaaaaa55', 'chain_bbbbbb66', 'chain_cccccc77'].sort(),
+    `--all should return all 3 chains, got: ${JSON.stringify(allIds)}`)
+
+  // --- Test 3: --since/--until time range filtering ---
+  // Filter to recent activity only (excludes 'c-main' from 2026-01-01).
+  const rangeResult = runCommand('node', [
+    'lib/cli.js', 'insights', '--list', '--chain', '--all',
+    '--since', '2026-05-10', '--until', '2026-05-13', '--json',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  const rangeIds = (JSON.parse(rangeResult) as Array<{ chain_id: string }>).map((c) => c.chain_id)
+  assert.deepEqual(rangeIds.sort(), ['chain_aaaaaa55', 'chain_bbbbbb66'].sort(),
+    `--since 2026-05-10 should exclude chain C, got: ${JSON.stringify(rangeIds)}`)
+
+  // --- Test 4: --limit caps the number of chains ---
+  const limitResult = runCommand('node', [
+    'lib/cli.js', 'insights', '--list', '--chain', '--all', '--limit', '1', '--json',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  const limitParsed = JSON.parse(limitResult) as Array<{ chain_id: string }>
+  assert.equal(limitParsed.length, 1, `--limit 1 should return 1 chain, got ${limitParsed.length}`)
+  // Newest chain first (sort by last_activity DESC): chain A is newest.
+  assert.equal(limitParsed[0].chain_id, 'chain_aaaaaa55',
+    `--limit 1 should return newest chain (A), got ${limitParsed[0].chain_id}`)
+
+  console.log('verify: insights list chain scopes')
 }
 
 function verifyCodexHook() {
@@ -2337,6 +2412,7 @@ async function main() {
     verifyInsightsChainFlagParsing(tempRoot)
     verifyInsightsListChain(tempRoot)
     verifyInsightsListChainGrep(tempRoot)
+    verifyInsightsListChainScopes(tempRoot)
     verifyCodexHook()
     verifySessionRestore(tempRoot)
     verifySessionExport(tempRoot)
