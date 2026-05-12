@@ -90,6 +90,7 @@ Output:
   --offset <n>       Skip first n primary insights in content view (newest first)
   --chain [id]       Without value: in --list mode, group sessions by chain.
                      With chain_xxxxxxxx value: read insights for a specific chain.
+                     Use space-separated form: --chain chain_xxxxxxxx (not --chain=...).
   --include-subagents With chain queries, include subagent sessions (default: main only).
   --json             Output as JSON
   --help             Show this help
@@ -883,6 +884,11 @@ export function main(argvInput?: string[]) {
   if (args.chainId && args.session) {
     console.error('Error: --chain <id> cannot be combined with --session. Use --chain <id> for chain read mode or --session <id> for session read mode.')
     process.exit(1)
+  }
+
+  if (args.chainId) {
+    console.error('Error: reading insights by chain id is not yet implemented (coming in Stage 5).')
+    process.exit(2)
   }
 
   const db = openDb()

@@ -704,63 +704,74 @@ function verifyInsightsChainFlagParsing(tempRoot: string) {
   applySchema(db)
   db.close()
 
-  // Case A: `--chain <valid id>` is accepted (read mode). Currently no chain
-  // with that id exists, so the CLI should either return an empty result or
-  // a 'not found' error — but it MUST NOT error on the flag parsing itself.
-  // We assert by checking that the process didn't fail with a parser error.
+  // Case A: `--chain <valid id>` parses cleanly AND routes to the chainId
+  // read-mode branch. Until Task 5.1 wires the consumer, the CLI emits the
+  // temporary "not yet implemented" guard. This assertion proves both that
+  // the validator did NOT trip (chain_a3k7m2pq is a well-formed id) AND
+  // that args.chainId was actually set (otherwise the legacy "--session
+  // required" path would fire instead).
   const readModeResult = spawnNode(
     [join(repoRoot, 'lib/cli.js'), 'insights', '--chain', 'chain_a3k7m2pq', '--json'],
     { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
   )
-  // We expect EITHER exit 0 with empty results OR a non-parser error.
-  // What we MUST NOT see: a parse error like "unknown option" or
-  // "--chain requires a value".
   assert(
-    !readModeResult.stderr.includes('unknown option') &&
-    !readModeResult.stderr.includes('requires a value'),
-    `--chain <id> should parse cleanly, got stderr: ${readModeResult.stderr.slice(0, 200)}`
+    !readModeResult.stderr.includes('--chain expects a chain id'),
+    `valid --chain id must not trip the format-error branch, got stderr: ${readModeResult.stderr.slice(0, 200)}`
+  )
+  // And: it should hit the not-yet-implemented guard, not the legacy "--session required" message.
+  // (Once Task 5.1 lands, this assertion will need to change to "exits 0 with JSON output".)
+  assert(
+    readModeResult.stderr.includes('not yet implemented'),
+    `--chain <id> should hit the not-yet-implemented guard, got stderr: ${readModeResult.stderr.slice(0, 200)}`
   )
 
-  // Case B: `--chain` followed by an INVALID-format value must reject with a
-  // clear error message about chain id format.
+  // Case B: `--chain` followed by an INVALID-format value must reject with
+  // the validator's exact error string.
   const invalidIdResult = spawnNode(
     [join(repoRoot, 'lib/cli.js'), 'insights', '--chain', 'not-a-chain-id', '--json'],
     { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
   )
   assert.notEqual(invalidIdResult.status, 0, 'invalid chain id should fail')
   assert(
-    invalidIdResult.stderr.toLowerCase().includes('chain') &&
-    (invalidIdResult.stderr.includes('chain_') || invalidIdResult.stderr.includes('format')),
-    `error should mention chain id format, got: ${invalidIdResult.stderr.slice(0, 200)}`
+    invalidIdResult.stderr.includes('--chain expects a chain id'),
+    `error should be the validator's exact message, got: ${invalidIdResult.stderr.slice(0, 200)}`
   )
 
   // Case C: `--chain` as a BARE flag with --list (no value) means list mode.
-  // Should succeed and produce JSON output (likely empty array since no chains exist).
+  // On an empty DB, the existing --list pipeline emits '[]' and exits 0.
+  // Once Task 4.2 lands, this output shape may change ('{ chains: [] }' etc.)
+  // and the assertion will need updating — that's intentional, it forces
+  // Task 4.2 to acknowledge the schema change.
   const listModeResult = spawnNode(
     [join(repoRoot, 'lib/cli.js'), 'insights', '--list', '--chain', '--all', '--json'],
     { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
   )
-  // Task 4.1 is only about PARSING — Task 4.2 will implement the actual
-  // list-chain query logic. So either: (a) parse succeeds and the CLI emits
-  // an empty/placeholder result, OR (b) the CLI errors with a "not yet
-  // implemented" message. We assert that the parser at least doesn't reject
-  // the flag combination.
-  assert(
-    !listModeResult.stderr.includes('unknown option'),
-    `--list --chain should parse cleanly, got stderr: ${listModeResult.stderr.slice(0, 200)}`
+  assert.equal(
+    listModeResult.status,
+    0,
+    `--list --chain --all should exit 0, got ${listModeResult.status}, stderr: ${listModeResult.stderr.slice(0, 200)}`
+  )
+  assert.equal(
+    listModeResult.stdout.trim(),
+    '[]',
+    `--list --chain --all on empty DB should emit '[]', got: ${listModeResult.stdout.slice(0, 200)}`
   )
 
   // Case D: `--chain` followed by another flag (e.g., `--json`) means bare
-  // flag — the next token is NOT a value. Parser should accept `--chain`
-  // as list-mode flag and continue parsing `--json` as its own flag.
+  // flag — the next token is NOT a value. The strongest test is that
+  // --json was processed independently and produced JSON output.
   const flagThenFlag = spawnNode(
     [join(repoRoot, 'lib/cli.js'), 'insights', '--list', '--chain', '--json'],
     { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
   )
+  assert.equal(
+    flagThenFlag.status,
+    0,
+    `--list --chain --json should exit 0, got stderr: ${flagThenFlag.stderr.slice(0, 200)}`
+  )
   assert(
-    !flagThenFlag.stderr.includes('unknown option') &&
-    !flagThenFlag.stderr.includes('expects a chain id'),
-    `--chain followed by --json should treat --chain as bare list-mode flag, got stderr: ${flagThenFlag.stderr.slice(0, 200)}`
+    flagThenFlag.stdout.trim().startsWith('['),
+    `--json must still produce JSON output: '--chain' must not have consumed it, got stdout: ${flagThenFlag.stdout.slice(0, 200)}`
   )
 
   console.log('verify: insights chain flag parsing')
