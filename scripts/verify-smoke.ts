@@ -129,6 +129,35 @@ function verifyRuntimeDefaults() {
   console.log('verify: runtime defaults')
 }
 
+function verifyChainHelpDocs() {
+  // Top-level help should advertise chain filters at the command summary level
+  const topHelp = runCommand('node', ['lib/cli.js', '--help'])
+  assert(
+    topHelp.includes('--chain'),
+    `top-level --help should mention --chain, got: ${topHelp.slice(0, 500)}`
+  )
+  assert(
+    topHelp.includes('--include-subagents'),
+    `top-level --help should mention --include-subagents, got: ${topHelp.slice(0, 500)}`
+  )
+
+  // insights help
+  const insightsHelp = runCommand('node', ['lib/cli.js', 'insights', '--help'])
+  assert(insightsHelp.includes('--chain'), 'insights --help should mention --chain')
+  assert(insightsHelp.includes('--include-subagents'), 'insights --help should mention --include-subagents')
+
+  // export help
+  const exportHelp = runCommand('node', ['lib/cli.js', 'export', '--help'])
+  assert(exportHelp.includes('--chain'), 'export --help should mention --chain')
+  assert(exportHelp.includes('--include-subagents'), 'export --help should mention --include-subagents')
+
+  // records cut help
+  const cutHelp = runCommand('node', ['lib/cli.js', 'records', 'cut', '--help'])
+  assert(cutHelp.includes('--chain'), 'records cut --help should mention --chain')
+
+  console.log('verify: chain help docs')
+}
+
 function verifyServicePlist(tempRoot: string) {
   const stdout = runCommand('node', ['lib/cli.js', 'install-service', '--print-plist'], {
     env: {
@@ -3013,6 +3042,7 @@ async function main() {
     verifySubagentInheritsChainOnLatePromotion(tempRoot)
     verifyBuiltCli()
     verifyRuntimeDefaults()
+    verifyChainHelpDocs()
     verifyServicePlist(tempRoot)
     verifyInsightsCwdList(tempRoot)
     verifyTimeRangeList(tempRoot)

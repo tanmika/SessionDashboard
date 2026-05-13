@@ -45,10 +45,11 @@ Commands:
   service-status
               Show macOS background service status
   insights    Read/search insight history. Try: session-dashboard insights --help
-              Key filters: --list, --cwd, --all, --grep, --range, --since, --until
+              Key filters: --list, --cwd, --all, --grep, --range, --since, --until, --chain, --include-subagents
   records     Cut a raw conversation range to a file. Try: session-dashboard records cut --help
+              Key filters: --session, --chain
   export      Export conversation or insights. Try: session-dashboard export --help
-              Key filters: --mode, --depth, --range, --since, --until
+              Key filters: --mode, --depth, --chain, --include-subagents, --range, --since, --until
   open        Open the web UI in your default browser
   serve       Run the server in the foreground (for debugging)
 

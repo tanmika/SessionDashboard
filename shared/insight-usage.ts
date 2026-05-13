@@ -41,6 +41,32 @@ session-dashboard insights --session <your-session-id> --limit 30 --offset 30
 session-dashboard insights --session <your-session-id> --chain --limit 50
 \`\`\`
 
+### 按 chain 读取（推荐）
+
+如果你使用过 /clear-and-continue 等指令，多个 session 会归属同一个 chain（同一逻辑工作单元）。按 chain 读取通常比读取单个 session 更有价值，因为关联会话会被合并展示。
+
+\`\`\`bash
+# 当前 session 的 chain 全量读取（最常用）
+session-dashboard insights --session <your-session-id> --chain
+
+# 按 chain id 直接读取
+session-dashboard insights --chain chain_xxxxxxxx
+
+# 列出当前目录最近的 chain
+session-dashboard insights --list --chain
+\`\`\`
+
+默认仅包含 main 区会话；如果需要把 subagent 的 insight 一并纳入，追加 \`--include-subagents\`。
+
+### 导出与切片（按需）
+
+\`session-dashboard export\` 与 \`session-dashboard records cut\` 同样支持 \`--chain\`，可按 chain 维度导出会话或切片原始记录：
+
+\`\`\`bash
+session-dashboard export --chain chain_xxxxxxxx --mode insights
+session-dashboard records cut --chain chain_xxxxxxxx --from "..." --to "..."
+\`\`\`
+
 其他：\`--grep "关键词"\` 过滤、\`--list\` 查看当前目录相关 session、\`--all\` 跨目录查看。更多参数: \`session-dashboard insights --help\``
 
 /** Claude Code specific additions (subagent pattern, output-style) */
