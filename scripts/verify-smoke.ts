@@ -704,12 +704,8 @@ function verifyInsightsChainFlagParsing(tempRoot: string) {
   applySchema(db)
   db.close()
 
-  // Case A: `--chain <valid id>` parses cleanly AND routes to the chainId
-  // read-mode branch. Until Task 5.1 wires the consumer, the CLI emits the
-  // temporary "not yet implemented" guard. This assertion proves both that
-  // the validator did NOT trip (chain_a3k7m2pq is a well-formed id) AND
-  // that args.chainId was actually set (otherwise the legacy "--session
-  // required" path would fire instead).
+  // Case A: --chain <valid id> reads the chain (or returns chain-not-found if missing).
+  // MUST NOT trip the format-error path OR the legacy not-yet-implemented guard.
   const readModeResult = spawnNode(
     [join(repoRoot, 'lib/cli.js'), 'insights', '--chain', 'chain_a3k7m2pq', '--json'],
     { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
@@ -718,12 +714,13 @@ function verifyInsightsChainFlagParsing(tempRoot: string) {
     !readModeResult.stderr.includes('--chain expects a chain id'),
     `valid --chain id must not trip the format-error branch, got stderr: ${readModeResult.stderr.slice(0, 200)}`
   )
-  // And: it should hit the not-yet-implemented guard, not the legacy "--session required" message.
-  // (Once Task 5.1 lands, this assertion will need to change to "exits 0 with JSON output".)
   assert(
-    readModeResult.stderr.includes('not yet implemented'),
-    `--chain <id> should hit the not-yet-implemented guard, got stderr: ${readModeResult.stderr.slice(0, 200)}`
+    !readModeResult.stderr.includes('not yet implemented'),
+    `--chain <id> should be implemented now, got stderr: ${readModeResult.stderr.slice(0, 200)}`
   )
+  // Should either succeed with chain content (empty here since DB is fresh) OR
+  // fail with a chain-not-found message. Both are fine — what matters is the format
+  // validation path didn't fire and the legacy guard is gone.
 
   // Case B: `--chain` followed by an INVALID-format value must reject with
   // the validator's exact error string.
@@ -1123,6 +1120,139 @@ function verifyInsightsListChainScopes(tempRoot: string) {
     `default scope (cwd=/tmp/scope-a) should return only chain A, got: ${JSON.stringify(defaultIds)}`)
 
   console.log('verify: insights list chain scopes')
+}
+
+function verifyInsightsReadChain(tempRoot: string) {
+  const tempHome = join(tempRoot, 'read-chain-home')
+  const dataDir = join(tempHome, 'data')
+  mkdirSync(dataDir, { recursive: true })
+  const dbPath = join(dataDir, 'dashboard.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+
+  // Chain: 2 main sessions + 1 subagent, all sharing chain_test1234.
+  insertSession(db, 'main-1', {
+    cwd: '/tmp/read-chain', transcriptPath: '', source: 'claude',
+    chainId: 'chain_test1234',
+  })
+  insertSession(db, 'main-2', {
+    cwd: '/tmp/read-chain', transcriptPath: '', source: 'claude',
+    chainId: 'chain_test1234', predecessorId: 'main-1',
+  })
+  insertSession(db, 'sub-1', {
+    cwd: '/tmp/read-chain', transcriptPath: '', source: 'codex',
+    chainId: 'chain_test1234', isSubagent: true, parentSessionId: 'main-1',
+  })
+
+  // Set timestamps for deterministic ordering
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-10T08:00:00.000Z', '2026-05-10T09:00:00.000Z', 'main-1')
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-11T08:00:00.000Z', '2026-05-11T09:00:00.000Z', 'main-2')
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-10T09:30:00.000Z', '2026-05-10T10:00:00.000Z', 'sub-1')
+
+  // Insights
+  insertInsight(db, 'main-1', 'main-1 first insight', 'transcript', '2026-05-10T09:00:00.000Z')
+  insertInsight(db, 'main-1', 'main-1 user prompt', 'user', '2026-05-10T08:30:00.000Z')
+  insertInsight(db, 'main-2', 'main-2 latest insight', 'transcript', '2026-05-11T09:00:00.000Z')
+  insertInsight(db, 'sub-1', 'subagent insight (excluded by default)', 'transcript', '2026-05-10T10:00:00.000Z')
+
+  db.close()
+
+  // --- Test 1: default --chain <id> reads main区 insights (no subagents) ---
+  const defaultResult = runCommand('node', [
+    'lib/cli.js', 'insights', '--chain', 'chain_test1234', '--json',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+
+  const defaultParsed = JSON.parse(defaultResult) as {
+    chain: {
+      chain_id: string
+      main_session_ids: string[]
+      subagent_session_ids: string[]
+      representative_session_id: string
+      sessions_count: number
+      chain_started_at: string
+      chain_last_activity: string
+      cwd: string
+    }
+    insights: Array<{
+      id: number
+      content: string
+      timestamp: string
+      source: string
+      source_session: string
+    }>
+    user_prompts: Array<{
+      content: string
+      timestamp: string
+      source_session: string
+    }>
+  }
+
+  // Envelope shape
+  assert.equal(defaultParsed.chain.chain_id, 'chain_test1234')
+  assert.deepEqual(defaultParsed.chain.main_session_ids.sort(), ['main-1', 'main-2'].sort())
+  assert.deepEqual(defaultParsed.chain.subagent_session_ids, ['sub-1'])
+  assert.equal(defaultParsed.chain.sessions_count, 2)  // main only
+  assert.equal(defaultParsed.chain.representative_session_id, 'main-2')  // latest main
+
+  // Insights: main-zone only, sorted newest first
+  const insightContents = defaultParsed.insights.map((i) => i.content)
+  assert.deepEqual(insightContents, ['main-2 latest insight', 'main-1 first insight'],
+    `default chain read should return main insights sorted DESC, got: ${JSON.stringify(insightContents)}`)
+  assert(!insightContents.includes('subagent insight (excluded by default)'),
+    'subagent insight must be excluded by default')
+
+  // Each insight tagged with source_session
+  assert.equal(defaultParsed.insights[0].source_session, 'main-2')
+  assert.equal(defaultParsed.insights[1].source_session, 'main-1')
+
+  // User prompts split out
+  assert.equal(defaultParsed.user_prompts.length, 1)
+  assert.equal(defaultParsed.user_prompts[0].content, 'main-1 user prompt')
+  assert.equal(defaultParsed.user_prompts[0].source_session, 'main-1')
+
+  // --- Test 2: --include-subagents brings subagent insights in ---
+  const withSubResult = runCommand('node', [
+    'lib/cli.js', 'insights', '--chain', 'chain_test1234', '--include-subagents', '--json',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  const withSubParsed = JSON.parse(withSubResult) as typeof defaultParsed
+  const withSubContents = withSubParsed.insights.map((i) => i.content)
+  assert(withSubContents.includes('subagent insight (excluded by default)'),
+    '--include-subagents should include subagent insights')
+  assert.equal(withSubParsed.insights.length, 3,
+    `--include-subagents should yield 3 insights, got ${withSubParsed.insights.length}`)
+
+  // --- Test 3: --limit 1 caps insights ---
+  const limitResult = runCommand('node', [
+    'lib/cli.js', 'insights', '--chain', 'chain_test1234', '--limit', '1', '--json',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  const limitParsed = JSON.parse(limitResult) as typeof defaultParsed
+  assert.equal(limitParsed.insights.length, 1, '--limit 1 should yield 1 insight')
+  assert.equal(limitParsed.insights[0].content, 'main-2 latest insight', 'should be newest')
+
+  // --- Test 4: --grep filters chain insights ---
+  const grepResult = runCommand('node', [
+    'lib/cli.js', 'insights', '--chain', 'chain_test1234', '--grep', 'first', '--json',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  const grepParsed = JSON.parse(grepResult) as typeof defaultParsed
+  assert.equal(grepParsed.insights.length, 1)
+  assert.equal(grepParsed.insights[0].content, 'main-1 first insight')
+
+  // --- Test 5: unknown chain id returns error ---
+  // Use chain_99999999 (all digits — Crockford-valid format, but not in fixture DB).
+  const unknownResult = spawnNode(
+    [join(repoRoot, 'lib/cli.js'), 'insights', '--chain', 'chain_99999999', '--json'],
+    { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
+  )
+  assert.notEqual(unknownResult.status, 0, 'unknown chain id should fail')
+  assert(
+    unknownResult.stderr.includes('not found') || unknownResult.stderr.includes('no sessions'),
+    `should hint chain not found, got stderr: ${unknownResult.stderr.slice(0, 200)}`
+  )
+
+  console.log('verify: insights read chain')
 }
 
 function verifyCodexHook() {
@@ -2454,6 +2584,7 @@ async function main() {
     verifyInsightsListChain(tempRoot)
     verifyInsightsListChainGrep(tempRoot)
     verifyInsightsListChainScopes(tempRoot)
+    verifyInsightsReadChain(tempRoot)
     verifyCodexHook()
     verifySessionRestore(tempRoot)
     verifySessionExport(tempRoot)

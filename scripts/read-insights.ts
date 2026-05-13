@@ -74,6 +74,26 @@ type InsightRow = {
   source_session: string
 }
 
+interface InsightWithSource {
+  id: number
+  content: string
+  timestamp: string
+  source: InsightSource
+  source_session: string
+}
+
+interface UserPromptWithSource {
+  content: string
+  timestamp: string
+  source_session: string
+}
+
+interface ChainReadResult {
+  chain: ChainSummary
+  insights: InsightWithSource[]
+  user_prompts: UserPromptWithSource[]
+}
+
 const HELP = `
 Session Dashboard — Insight Recovery CLI
 
@@ -785,6 +805,173 @@ function printChainList(chains: ChainSummary[], args?: Args) {
   }
 }
 
+function readChain(db: Database.Database, args: Args, range?: TimeRange): ChainReadResult | null {
+  // 1. Load all sessions in the chain ordered by created_at ASC.
+  const sessions = db.prepare(`
+    SELECT session_id, cwd, last_activity, created_at, is_subagent
+    FROM sessions
+    WHERE chain_id = ?
+    ORDER BY created_at ASC
+  `).all(args.chainId) as Array<{
+    session_id: string
+    cwd: string
+    last_activity: string
+    created_at: string
+    is_subagent: number
+  }>
+
+  if (sessions.length === 0) return null
+
+  // 2. Split into main and subagent zones
+  const mainSessions = sessions.filter((s) => s.is_subagent === 0)
+  const subagentSessions = sessions.filter((s) => s.is_subagent === 1)
+
+  if (mainSessions.length === 0) return null  // chain has only subagents — shouldn't happen
+
+  // 3. Build the chain summary
+  const mainSessionIds = mainSessions.map((s) => s.session_id)
+  const subagentSessionIds = subagentSessions.map((s) => s.session_id)
+
+  // Pick representative: main session with latest last_activity, tie-break by id ASC
+  // (matches the Task 4.2 polish semantic in listChains).
+  let representative = mainSessions[0]
+  for (const s of mainSessions) {
+    if (
+      s.last_activity > representative.last_activity ||
+      (s.last_activity === representative.last_activity && s.session_id < representative.session_id)
+    ) {
+      representative = s
+    }
+  }
+
+  // chain_started_at = MIN(created_at) across main; chain_last_activity = MAX(last_activity) across main.
+  const chainStartedAt = mainSessions.reduce(
+    (a, s) => (s.created_at < a ? s.created_at : a),
+    mainSessions[0].created_at
+  )
+  const chainLastActivity = mainSessions.reduce(
+    (a, s) => (s.last_activity > a ? s.last_activity : a),
+    mainSessions[0].last_activity
+  )
+
+  const chain: ChainSummary = {
+    chain_id: args.chainId!,
+    main_session_ids: mainSessionIds,
+    subagent_session_ids: subagentSessionIds,
+    sessions_count: mainSessions.length,
+    representative_session_id: representative.session_id,
+    insights_count: 0,  // filled in after the insight query
+    chain_started_at: chainStartedAt,
+    chain_last_activity: chainLastActivity,
+    cwd: mainSessions[0].cwd,
+  }
+
+  // 4. Determine which sessions to pull insights from
+  const targetSessionIds = args.includeSubagents
+    ? sessions.map((s) => s.session_id)
+    : mainSessionIds
+
+  // 5. Pull primary insights (source != 'user') from target sessions, applying range filter
+  const placeholders = targetSessionIds.map(() => '?').join(',')
+  const re = args.grep ? compileGrep(args.grep) : null
+
+  const insightWhereClauses: string[] = [`session_id IN (${placeholders})`, `source != 'user'`]
+  const insightParams: (string | number)[] = [...targetSessionIds]
+  if (range?.since) {
+    insightWhereClauses.push('timestamp >= ?')
+    insightParams.push(range.since)
+  }
+  if (range?.until) {
+    insightWhereClauses.push('timestamp < ?')
+    insightParams.push(range.until)
+  }
+
+  const insightRows = db.prepare(`
+    SELECT id, content, timestamp, source, session_id AS source_session
+    FROM insights
+    WHERE ${insightWhereClauses.join(' AND ')}
+    ORDER BY timestamp DESC, id DESC
+  `).all(...insightParams) as InsightWithSource[]
+
+  // Apply grep filter in JS (mirrors the single-session cmdInsights path).
+  const filteredInsights = re
+    ? insightRows.filter((r) => re.test(r.content))
+    : insightRows
+
+  // Apply offset + limit (mirrors single-session pagination).
+  const paginated = filteredInsights.slice(args.offset, args.offset + args.limit)
+  chain.insights_count = filteredInsights.length
+
+  // 6. Pull user prompts separately (also range-filtered, no grep applied — matches single-session contract).
+  const promptWhereClauses: string[] = [`session_id IN (${placeholders})`, `source = 'user'`]
+  const promptParams: (string | number)[] = [...targetSessionIds]
+  if (range?.since) {
+    promptWhereClauses.push('timestamp >= ?')
+    promptParams.push(range.since)
+  }
+  if (range?.until) {
+    promptWhereClauses.push('timestamp < ?')
+    promptParams.push(range.until)
+  }
+  const promptRows = db.prepare(`
+    SELECT content, timestamp, session_id AS source_session
+    FROM insights
+    WHERE ${promptWhereClauses.join(' AND ')}
+    ORDER BY timestamp DESC, id DESC
+  `).all(...promptParams) as UserPromptWithSource[]
+
+  return {
+    chain,
+    insights: paginated,
+    user_prompts: promptRows,
+  }
+}
+
+function printChainRead(result: ChainReadResult, args: Args) {
+  const { chain, insights, user_prompts } = result
+  const subagentCount = chain.subagent_session_ids.length
+  const sessionsLine = subagentCount > 0
+    ? `${chain.sessions_count} main + ${subagentCount} subagent${subagentCount === 1 ? '' : 's'}`
+    : `${chain.sessions_count} main`
+
+  console.log(`Chain: ${chain.chain_id}`)
+  console.log(`Sessions: ${sessionsLine}`)
+  console.log(`Last activity: ${formatBoundaryTime(chain.chain_last_activity)}`)
+  console.log(`Cwd: ${chain.cwd}`)
+  if (args.grep) {
+    console.log(`[grep: "${args.grep}"]`)
+  }
+  console.log('─'.repeat(80))
+
+  if (insights.length === 0) {
+    if (args.grep) {
+      console.log(`No primary insights matched grep "${args.grep}".`)
+    } else {
+      console.log('No primary insights found in this chain.')
+    }
+  } else {
+    for (const ins of insights) {
+      console.log(`--- [${ins.source_session.slice(0, 10)}] ---`)
+      console.log(ins.content)
+      console.log()
+    }
+  }
+
+  const parts: string[] = [
+    `${insights.length} / ${chain.insights_count} primary insights shown`,
+  ]
+  if (user_prompts.length > 0) {
+    parts.push(`${user_prompts.length} user prompts`)
+  }
+  if (args.grep) {
+    parts.push(`grep: "${args.grep}"`)
+  }
+  if (args.offset > 0) {
+    parts.push(`offset: ${args.offset}`)
+  }
+  console.log(`[${parts.join(' | ')}]`)
+}
+
 function cmdList(db: Database.Database, sessions: ListedSession[], args: Args, range?: TimeRange) {
   const stmtPrimaryCount = db.prepare(
     `SELECT COUNT(*) as count FROM insights
@@ -1109,12 +1296,23 @@ export function main(argvInput?: string[]) {
     process.exit(1)
   }
 
-  if (args.chainId) {
-    console.error('Error: reading insights by chain id is not yet implemented (coming in Stage 5).')
-    process.exit(2)
-  }
-
   const db = openDb()
+
+  if (args.chainId) {
+    const result = readChain(db, args, range)
+    if (!result) {
+      console.error(`Error: chain "${args.chainId}" not found (no sessions with that chain_id).`)
+      db.close()
+      process.exit(1)
+    }
+    if (args.json) {
+      console.log(JSON.stringify(result, null, 2))
+    } else {
+      printChainRead(result, args)
+    }
+    db.close()
+    return
+  }
 
   // NOTE: must come before args.cwd / args.session / args.list branches —
   // --list --chain consumes those filters internally via listChains.
