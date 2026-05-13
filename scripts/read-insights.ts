@@ -92,6 +92,14 @@ interface ChainReadResult {
   chain: ChainSummary
   insights: InsightWithSource[]
   user_prompts: UserPromptWithSource[]
+  // total_matched_primary: count of primary insights AFTER grep/range filters
+  // (before pagination). Present only when at least one of those filters was
+  // active — mirrors the single-session JSON envelope contract.
+  total_matched_primary?: number
+  // total_user_prompts: raw count of user prompts across target sessions
+  // (range-filtered, NOT grep-filtered, NOT paginated). Mirrors the
+  // single-session envelope's total_user_prompts field.
+  total_user_prompts: number
 }
 
 const HELP = `
@@ -900,9 +908,24 @@ function readChain(db: Database.Database, args: Args, range?: TimeRange): ChainR
 
   // Apply offset + limit (mirrors single-session pagination).
   const paginated = filteredInsights.slice(args.offset, args.offset + args.limit)
-  chain.insights_count = filteredInsights.length
 
-  // 6. Pull user prompts separately (also range-filtered, no grep applied — matches single-session contract).
+  // chain.insights_count is the RAW count of main-zone non-user insights
+  // across target sessions, ignoring grep/range filters. This matches the
+  // listChains semantic (where insights_count is also unfiltered) and the
+  // documented contract on ChainSummary.insights_count ("unfiltered").
+  // Post-filter counts go on the envelope as total_matched_primary.
+  const rawInsightsCount = (db.prepare(`
+    SELECT COUNT(id) AS cnt
+    FROM insights
+    WHERE session_id IN (${placeholders}) AND source != 'user'
+  `).get(...targetSessionIds) as { cnt: number }).cnt
+  chain.insights_count = rawInsightsCount
+
+  // 6. Pull user prompts separately. Range-filtered (matches single-session
+  // contract); grep is not applied to user prompts (consistent with the help
+  // text "User prompts are not counted as grep matches" and single-session
+  // behavior). Paginated independently with offset+limit so callers asking
+  // for --limit 10 can't accidentally pull thousands of user-prompt rows.
   const promptWhereClauses: string[] = [`session_id IN (${placeholders})`, `source = 'user'`]
   const promptParams: (string | number)[] = [...targetSessionIds]
   if (range?.since) {
@@ -920,15 +943,26 @@ function readChain(db: Database.Database, args: Args, range?: TimeRange): ChainR
     ORDER BY timestamp DESC, id DESC
   `).all(...promptParams) as UserPromptWithSource[]
 
+  // Pagination contract (option A — independent slicing):
+  // user_prompts honors the same offset/limit as insights, applied to the
+  // separately sorted user-prompts list. This is simpler than single-session's
+  // adjacency-attachment heuristic (which is timestamp-fragile across multiple
+  // sessions in one chain). Callers get total_user_prompts for the raw count.
+  const paginatedPrompts = promptRows.slice(args.offset, args.offset + args.limit)
+
+  const filtersActive = !!(args.grep || range)
+
   return {
     chain,
     insights: paginated,
-    user_prompts: promptRows,
+    user_prompts: paginatedPrompts,
+    ...(filtersActive ? { total_matched_primary: filteredInsights.length } : {}),
+    total_user_prompts: promptRows.length,
   }
 }
 
 function printChainRead(result: ChainReadResult, args: Args) {
-  const { chain, insights, user_prompts } = result
+  const { chain, insights, user_prompts, total_matched_primary, total_user_prompts } = result
   const subagentCount = chain.subagent_session_ids.length
   const sessionsLine = subagentCount > 0
     ? `${chain.sessions_count} main + ${subagentCount} subagent${subagentCount === 1 ? '' : 's'}`
@@ -957,11 +991,23 @@ function printChainRead(result: ChainReadResult, args: Args) {
     }
   }
 
-  const parts: string[] = [
-    `${insights.length} / ${chain.insights_count} primary insights shown`,
-  ]
-  if (user_prompts.length > 0) {
-    parts.push(`${user_prompts.length} user prompts`)
+  // Summary line mirrors single-session's outputInsights footer:
+  //   "{showing} / {matched} matched primary insights shown | {raw_total} total primary insights"
+  // when filters are active, otherwise:
+  //   "{showing} / {raw_total} primary insights shown"
+  const parts: string[] = []
+  if (total_matched_primary != null) {
+    parts.push(`${insights.length} / ${total_matched_primary} matched primary insights shown`)
+    parts.push(`${chain.insights_count} total primary insights`)
+  } else {
+    parts.push(`${insights.length} / ${chain.insights_count} primary insights shown`)
+  }
+  if (total_user_prompts > 0) {
+    if (user_prompts.length === total_user_prompts) {
+      parts.push(`${total_user_prompts} user prompts`)
+    } else {
+      parts.push(`${user_prompts.length} / ${total_user_prompts} user prompts shown`)
+    }
   }
   if (args.grep) {
     parts.push(`grep: "${args.grep}"`)

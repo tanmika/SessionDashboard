@@ -1172,6 +1172,7 @@ function verifyInsightsReadChain(tempRoot: string) {
       subagent_session_ids: string[]
       representative_session_id: string
       sessions_count: number
+      insights_count: number
       chain_started_at: string
       chain_last_activity: string
       cwd: string
@@ -1188,6 +1189,8 @@ function verifyInsightsReadChain(tempRoot: string) {
       timestamp: string
       source_session: string
     }>
+    total_matched_primary?: number
+    total_user_prompts: number
   }
 
   // Envelope shape
@@ -1212,6 +1215,17 @@ function verifyInsightsReadChain(tempRoot: string) {
   assert.equal(defaultParsed.user_prompts.length, 1)
   assert.equal(defaultParsed.user_prompts[0].content, 'main-1 user prompt')
   assert.equal(defaultParsed.user_prompts[0].source_session, 'main-1')
+
+  // Envelope shape (Cleanup #1): with no filters active, total_matched_primary
+  // must be ABSENT and chain.insights_count is the RAW count (matches
+  // listChains semantic).
+  assert.equal(defaultParsed.chain.insights_count, 2,
+    `chain.insights_count should be raw count (2), got ${defaultParsed.chain.insights_count}`)
+  assert.equal(defaultParsed.total_matched_primary, undefined,
+    `total_matched_primary must be absent when no filters are active, got ${defaultParsed.total_matched_primary}`)
+  // total_user_prompts is always present (raw count, range-filtered only).
+  assert.equal(defaultParsed.total_user_prompts, 1,
+    `total_user_prompts should be 1, got ${defaultParsed.total_user_prompts}`)
 
   // --- Test 2: --include-subagents brings subagent insights in ---
   const withSubResult = runCommand('node', [
@@ -1251,6 +1265,53 @@ function verifyInsightsReadChain(tempRoot: string) {
     unknownResult.stderr.includes('not found') || unknownResult.stderr.includes('no sessions'),
     `should hint chain not found, got stderr: ${unknownResult.stderr.slice(0, 200)}`
   )
+
+  // --- Test 6 (Cleanup #2): user_prompts honors --limit (option A: independent
+  // slicing). Seed a second chain with 5 user prompts on a single main session,
+  // run with --limit 2, and assert (a) user_prompts.length === 2 (paginated),
+  // (b) total_user_prompts === 5 (raw count survives), (c) order is newest first.
+  const promptDb = new Database(dbPath)
+  insertSession(promptDb, 'pchain-main', {
+    cwd: '/tmp/read-chain', transcriptPath: '', source: 'claude',
+    chainId: 'chain_pq2pq2pq',
+  })
+  promptDb.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-10T08:00:00.000Z', '2026-05-10T09:00:00.000Z', 'pchain-main')
+  // 5 user prompts at distinct timestamps.
+  insertInsight(promptDb, 'pchain-main', 'prompt 1', 'user', '2026-05-10T08:01:00.000Z')
+  insertInsight(promptDb, 'pchain-main', 'prompt 2', 'user', '2026-05-10T08:02:00.000Z')
+  insertInsight(promptDb, 'pchain-main', 'prompt 3', 'user', '2026-05-10T08:03:00.000Z')
+  insertInsight(promptDb, 'pchain-main', 'prompt 4', 'user', '2026-05-10T08:04:00.000Z')
+  insertInsight(promptDb, 'pchain-main', 'prompt 5', 'user', '2026-05-10T08:05:00.000Z')
+  promptDb.close()
+
+  const promptLimitResult = runCommand('node', [
+    'lib/cli.js', 'insights', '--chain', 'chain_pq2pq2pq', '--limit', '2', '--json',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  const promptLimitParsed = JSON.parse(promptLimitResult) as typeof defaultParsed
+  assert.equal(promptLimitParsed.user_prompts.length, 2,
+    `user_prompts should be paginated to --limit 2, got ${promptLimitParsed.user_prompts.length}`)
+  assert.equal(promptLimitParsed.total_user_prompts, 5,
+    `total_user_prompts should report raw count 5, got ${promptLimitParsed.total_user_prompts}`)
+  // Newest-first ordering: prompts 5 and 4 should be on the page.
+  assert.equal(promptLimitParsed.user_prompts[0].content, 'prompt 5',
+    `user_prompts[0] should be newest (prompt 5), got "${promptLimitParsed.user_prompts[0].content}"`)
+  assert.equal(promptLimitParsed.user_prompts[1].content, 'prompt 4',
+    `user_prompts[1] should be next-newest (prompt 4), got "${promptLimitParsed.user_prompts[1].content}"`)
+
+  // --- Test 7 (Cleanup #1): when filters ARE active, envelope exposes
+  // total_matched_primary and chain.insights_count stays as raw count.
+  // Reuse chain_test1234 with --grep "first" — matches 1 of 2 primary insights.
+  const filterShapeResult = runCommand('node', [
+    'lib/cli.js', 'insights', '--chain', 'chain_test1234', '--grep', 'first', '--json',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  const filterShapeParsed = JSON.parse(filterShapeResult) as typeof defaultParsed
+  assert.equal(filterShapeParsed.chain.insights_count, 2,
+    `chain.insights_count must remain RAW (2) even with --grep, got ${filterShapeParsed.chain.insights_count}`)
+  assert.equal(filterShapeParsed.total_matched_primary, 1,
+    `total_matched_primary should be 1 (one insight matched "first"), got ${filterShapeParsed.total_matched_primary}`)
+  assert.equal(filterShapeParsed.insights.length, 1,
+    `paginated insights.length should be 1, got ${filterShapeParsed.insights.length}`)
 
   console.log('verify: insights read chain')
 }
