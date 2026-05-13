@@ -22,6 +22,7 @@ interface SessionRow {
   pinned: number
   source: 'claude' | 'codex'
   predecessor_id: string
+  is_subagent?: number
 }
 
 export interface ExportSession {
@@ -32,6 +33,7 @@ export interface ExportSession {
   created_at: string
   source: 'claude' | 'codex'
   predecessor_id?: string
+  is_subagent?: boolean
 }
 
 type ExportResult =
@@ -45,7 +47,9 @@ type ReadableTranscriptResult =
 type ClaudeContentBlock = { role: 'agent' | 'tool'; text: string }
 
 export interface ExportOptions {
-  sessionId: string
+  sessionId?: string
+  chainId?: string
+  includeSubagents?: boolean
   mode?: SessionExportMode
   depth?: SessionExportDepth
   range?: TimeRange
@@ -74,6 +78,7 @@ function normalizeSession(row: SessionRow): ExportSession {
     created_at: row.created_at,
     source: row.source,
     predecessor_id: row.predecessor_id || undefined,
+    is_subagent: row.is_subagent === 1,
   }
 }
 
@@ -123,6 +128,29 @@ export function resolveExactSession(db: Database.Database, sessionId: string): E
     }
   }
   return normalizeSession(row)
+}
+
+export function resolveSessionsByChain(
+  db: Database.Database,
+  chainId: string,
+  options: { includeSubagents?: boolean } = {}
+): ExportSession[] | SessionExportFailure {
+  const includeSubagents = options.includeSubagents === true
+  const rows = db.prepare(`
+    SELECT session_id, cwd, transcript_path, state, last_activity, created_at,
+           alias, pinned, source, predecessor_id, is_subagent
+    FROM sessions
+    WHERE chain_id = ? AND (? = 1 OR is_subagent = 0)
+    ORDER BY created_at ASC
+  `).all(chainId, includeSubagents ? 1 : 0) as SessionRow[]
+
+  if (rows.length === 0) {
+    return {
+      error: 'session_not_found',
+      message: `Chain "${chainId}" has no sessions.`,
+    }
+  }
+  return rows.map(normalizeSession)
 }
 
 function resolveSessionChain(
@@ -607,7 +635,12 @@ function formatRangeLine(range: TimeRange | undefined): string | undefined {
   return `Range: ${range.since || '(beginning)'} to ${range.until || '(open)'}`
 }
 
-function formatConversationExport(sessions: ExportSession[], messages: SessionExportMessage[], range?: TimeRange): string {
+function formatConversationExport(
+  sessions: ExportSession[],
+  messages: SessionExportMessage[],
+  range?: TimeRange,
+  headerLines?: string[]
+): string {
   const messagesBySession = new Map<string, SessionExportMessage[]>()
   for (const message of messages) {
     const bucket = messagesBySession.get(message.session_id) ?? []
@@ -616,6 +649,9 @@ function formatConversationExport(sessions: ExportSession[], messages: SessionEx
   }
 
   const sections: string[] = []
+  if (headerLines && headerLines.length > 0) {
+    sections.push(...headerLines, '')
+  }
   const rangeLine = formatRangeLine(range)
   for (const session of sessions) {
     sections.push(
@@ -645,7 +681,12 @@ function formatConversationExport(sessions: ExportSession[], messages: SessionEx
   return sections.join('\n').trimEnd() + '\n'
 }
 
-function formatInsightExport(db: Database.Database, sessions: ExportSession[], range?: TimeRange): { content: string; itemCount: number } {
+function formatInsightExport(
+  db: Database.Database,
+  sessions: ExportSession[],
+  range?: TimeRange,
+  headerLines?: string[]
+): { content: string; itemCount: number } {
   const ids = sessions.map((session) => session.session_id)
   const placeholders = ids.map(() => '?').join(',')
   const rangeClauses: string[] = []
@@ -674,6 +715,9 @@ function formatInsightExport(db: Database.Database, sessions: ExportSession[], r
 
   const sessionsById = new Map(sessions.map((session) => [session.session_id, session]))
   const sections: string[] = []
+  if (headerLines && headerLines.length > 0) {
+    sections.push(...headerLines, '')
+  }
   let currentSessionId: string | null = null
   const rangeLine = formatRangeLine(range)
 
@@ -700,7 +744,7 @@ function formatInsightExport(db: Database.Database, sessions: ExportSession[], r
     )
   }
 
-  if (sections.length === 0) {
+  if (rows.length === 0) {
     sections.push(range ? '[No insights found in selected range]' : '[No insights found]', '')
   }
 
@@ -715,18 +759,61 @@ function makeFilename(session: ExportSession, mode: SessionExportMode): string {
   return `${session.display_name.replace(/[^\w.-]+/g, '_') || safeId}-${mode}.txt`
 }
 
+function makeChainHeaderLines(chainId: string, sessions: ExportSession[]): string[] {
+  const mainCount = sessions.filter((session) => !session.is_subagent).length
+  const subagentCount = sessions.length - mainCount
+  const sessionsLine = subagentCount > 0
+    ? `Sessions: ${mainCount} main + ${subagentCount} subagents`
+    : `Sessions: ${mainCount} main`
+  return [
+    `Chain ID: ${chainId}`,
+    sessionsLine,
+  ]
+}
+
+function makeChainFilename(chainId: string, mode: SessionExportMode): string {
+  return `${chainId}-${mode}.txt`
+}
+
 export function exportSessionText(db: Database.Database, options: ExportOptions): ExportResult {
   const mode = options.mode ?? 'conversation'
   const depth = normalizeDepth(options.depth)
   const range = options.range
-  const resolved = resolveSession(db, options.sessionId)
-  if ('error' in resolved) {
-    return { ok: false, error: resolved }
-  }
 
-  const chain = resolveSessionChain(db, resolved, depth)
-  if ('error' in chain) {
-    return { ok: false, error: chain }
+  let chain: ExportSession[]
+  let headerLines: string[] | undefined
+  let filename: string
+
+  if (options.chainId) {
+    const resolved = resolveSessionsByChain(db, options.chainId, {
+      includeSubagents: options.includeSubagents,
+    })
+    if ('error' in resolved) {
+      return { ok: false, error: resolved }
+    }
+    chain = resolved
+    headerLines = makeChainHeaderLines(options.chainId, chain)
+    filename = makeChainFilename(options.chainId, mode)
+  } else {
+    if (!options.sessionId) {
+      return {
+        ok: false,
+        error: {
+          error: 'session_not_found',
+          message: 'Either sessionId or chainId is required.',
+        },
+      }
+    }
+    const resolved = resolveSession(db, options.sessionId)
+    if ('error' in resolved) {
+      return { ok: false, error: resolved }
+    }
+    const resolvedChain = resolveSessionChain(db, resolved, depth)
+    if ('error' in resolvedChain) {
+      return { ok: false, error: resolvedChain }
+    }
+    chain = resolvedChain
+    filename = makeFilename(resolved, mode)
   }
 
   if (mode === 'conversation') {
@@ -756,8 +843,8 @@ export function exportSessionText(db: Database.Database, options: ExportOptions)
       data: {
         mode,
         depth,
-        content: formatConversationExport(chain, messages, range),
-        filename: makeFilename(resolved, mode),
+        content: formatConversationExport(chain, messages, range, headerLines),
+        filename,
         session_count: chain.length,
         item_count: messages.length,
         ...(range ? { range } : {}),
@@ -765,7 +852,7 @@ export function exportSessionText(db: Database.Database, options: ExportOptions)
     }
   }
 
-  const insightExport = formatInsightExport(db, chain, range)
+  const insightExport = formatInsightExport(db, chain, range, headerLines)
 
   return {
     ok: true,
@@ -773,7 +860,7 @@ export function exportSessionText(db: Database.Database, options: ExportOptions)
       mode,
       depth,
       content: insightExport.content,
-      filename: makeFilename(resolved, mode),
+      filename,
       session_count: chain.length,
       item_count: insightExport.itemCount,
       ...(range ? { range } : {}),

@@ -1644,6 +1644,101 @@ function verifySessionExport(tempRoot: string) {
   console.log('verify: session export conversation and fallback')
 }
 
+function verifyExportChain(tempRoot: string) {
+  const tempHome = join(tempRoot, 'export-chain-home')
+  const dataDir = join(tempHome, 'data')
+  const transcriptDir = join(tempRoot, 'export-chain-transcripts')
+  mkdirSync(dataDir, { recursive: true })
+  mkdirSync(transcriptDir, { recursive: true })
+
+  const dbPath = join(dataDir, 'dashboard.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+
+  // Two main sessions in the same chain, each with a transcript file.
+  const t1 = join(transcriptDir, 'chain-t1.jsonl')
+  const t2 = join(transcriptDir, 'chain-t2.jsonl')
+  writeFileSync(t1, [
+    JSON.stringify({ type: 'user', timestamp: '2026-05-10T09:00:00.000Z', message: { content: 'session 1 user' } }),
+    JSON.stringify({ type: 'assistant', timestamp: '2026-05-10T09:00:01.000Z', message: { content: [{ type: 'text', text: 'session 1 agent' }] } }),
+    '',
+  ].join('\n'))
+  writeFileSync(t2, [
+    JSON.stringify({ type: 'user', timestamp: '2026-05-11T09:00:00.000Z', message: { content: 'session 2 user' } }),
+    JSON.stringify({ type: 'assistant', timestamp: '2026-05-11T09:00:01.000Z', message: { content: [{ type: 'text', text: 'session 2 agent' }] } }),
+    '',
+  ].join('\n'))
+
+  insertSession(db, 'export-main-1', {
+    cwd: '/tmp/export-chain', transcriptPath: t1, source: 'claude',
+    chainId: 'chain_exprt112',
+  })
+  insertSession(db, 'export-main-2', {
+    cwd: '/tmp/export-chain', transcriptPath: t2, source: 'claude',
+    chainId: 'chain_exprt112', predecessorId: 'export-main-1',
+  })
+
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-10T08:00:00.000Z', '2026-05-10T09:00:01.000Z', 'export-main-1')
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-11T08:00:00.000Z', '2026-05-11T09:00:01.000Z', 'export-main-2')
+
+  insertInsight(db, 'export-main-1', 'insight from session 1', 'transcript', '2026-05-10T09:00:02.000Z')
+  insertInsight(db, 'export-main-2', 'insight from session 2', 'transcript', '2026-05-11T09:00:02.000Z')
+
+  db.close()
+
+  // --- Test 1: --chain --mode conversation ---
+  const convResult = runCommand('node', [
+    'lib/cli.js', 'export', '--chain', 'chain_exprt112', '--mode', 'conversation',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  assert(convResult.includes('Chain ID: chain_exprt112'),
+    `conversation export should include Chain ID header, got: ${convResult.slice(0, 300)}`)
+  assert(convResult.includes('session 1 user') && convResult.includes('session 2 user'),
+    `conversation export should include both sessions' user messages`)
+  assert(convResult.includes('session 1 agent') && convResult.includes('session 2 agent'),
+    `conversation export should include both sessions' agent messages`)
+  // Chronological order: session 1 before session 2
+  assert(
+    convResult.indexOf('session 1 user') < convResult.indexOf('session 2 user'),
+    'sessions should be exported in chronological order'
+  )
+
+  // --- Test 2: --chain --mode insights ---
+  const insResult = runCommand('node', [
+    'lib/cli.js', 'export', '--chain', 'chain_exprt112', '--mode', 'insights',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  assert(insResult.includes('Chain ID: chain_exprt112'),
+    `insights export should include Chain ID header, got: ${insResult.slice(0, 300)}`)
+  assert(insResult.includes('insight from session 1') && insResult.includes('insight from session 2'),
+    `insights export should include both main-zone insights`)
+
+  // --- Test 3: invalid chain id format → error ---
+  const invalidResult = spawnNode(
+    [join(repoRoot, 'lib/cli.js'), 'export', '--chain', 'not-a-chain'],
+    { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
+  )
+  assert.notEqual(invalidResult.status, 0, 'invalid chain id format should fail')
+  assert(invalidResult.stderr.includes('chain'),
+    `invalid chain id should mention 'chain' in error, got: ${invalidResult.stderr.slice(0, 200)}`)
+
+  // --- Test 4: unknown chain id → not-found error ---
+  const unknownResult = spawnNode(
+    [join(repoRoot, 'lib/cli.js'), 'export', '--chain', 'chain_99999999'],
+    { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
+  )
+  assert.notEqual(unknownResult.status, 0, 'unknown chain id should fail')
+
+  // --- Test 5: --chain + --session is rejected ---
+  const conflictResult = spawnNode(
+    [join(repoRoot, 'lib/cli.js'), 'export', '--chain', 'chain_exprt112', '--session', 'export-main-1'],
+    { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
+  )
+  assert.notEqual(conflictResult.status, 0, '--chain + --session combo should fail')
+
+  console.log('verify: export chain')
+}
+
 function verifyRecordsCut(tempRoot: string) {
   const tempHome = join(tempRoot, 'records-cut-home')
   const dataDir = join(tempHome, 'data')
@@ -2729,6 +2824,7 @@ async function main() {
     verifyCodexHook()
     verifySessionRestore(tempRoot)
     verifySessionExport(tempRoot)
+    verifyExportChain(tempRoot)
     verifyRecordsCut(tempRoot)
     verifyEventDedup(tempRoot)
     verifyInsightExtractionCompatibility()

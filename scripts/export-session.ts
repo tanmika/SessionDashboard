@@ -4,30 +4,40 @@ import { getDbPath } from '../shared/config.js'
 import type { SessionExportDepth, SessionExportMode } from '../shared/types.js'
 import { exportSessionText } from '../server/services/session-export.js'
 import { resolveTimeRange } from '../shared/time-range.js'
+import { isChainId } from '../shared/chain-id.js'
 
 interface Args {
   help: boolean
   session?: string
+  chain?: string
+  includeSubagents: boolean
   output?: string
   range?: string
   since?: string
   until?: string
   mode: SessionExportMode
   depth: SessionExportDepth
+  depthExplicit: boolean
 }
 
 const HELP = `
 Session Dashboard — Export CLI
 
-Usage: session-dashboard export --session <id> [options]
+Usage:
+  session-dashboard export --session <id> [options]
+  session-dashboard export --chain <chain_id> [options]
 
-Required:
+Required (exactly one of):
   --session <id>      Session ID (exact or unique prefix)
+  --chain <chain_id>  Chain ID (chain_xxxxxxxx). Exports all sessions sharing
+                      this chain_id. Mutually exclusive with --session and --depth.
 
 Export target:
   --mode <kind>       conversation | insights (default: conversation)
-  --depth <n|all>     Include predecessor sessions by depth.
+  --depth <n|all>     Include predecessor sessions by depth. (--session only)
                       0=current only, 1=current+1 predecessor (default: 1)
+  --include-subagents Include subagent sessions when exporting a chain.
+                      (default: main区 only, matching the rest of chain semantics)
 
 Time filter:
   --range <name>      today | yesterday | week | this-week | last-week
@@ -46,6 +56,8 @@ Examples:
   session-dashboard export --session 019cfbcb --mode insights --depth 2
   session-dashboard export --session 019cfbcb --mode insights --range week
   session-dashboard export --session 019cfbcb --mode conversation --since 2026-05-04 --until 2026-05-11
+  session-dashboard export --chain chain_a3k7m2pq --mode conversation
+  session-dashboard export --chain chain_a3k7m2pq --mode insights --include-subagents
 `.trim()
 
 function parseDepth(value: string | undefined): SessionExportDepth {
@@ -65,6 +77,8 @@ function parseArgs(argvInput?: string[]): Args {
     help: false,
     mode: 'conversation',
     depth: 1,
+    depthExplicit: false,
+    includeSubagents: false,
   }
 
   for (let i = 0; i < argv.length; i++) {
@@ -75,6 +89,18 @@ function parseArgs(argvInput?: string[]): Args {
         break
       case '--session':
         args.session = argv[++i]
+        break
+      case '--chain': {
+        const value = argv[++i]
+        if (!isChainId(value)) {
+          console.error(`Error: --chain expects a chain id of the form chain_xxxxxxxx (8 chars from the Crockford alphabet), got "${value}"`)
+          process.exit(1)
+        }
+        args.chain = value
+        break
+      }
+      case '--include-subagents':
+        args.includeSubagents = true
         break
       case '--output':
         args.output = argv[++i]
@@ -99,6 +125,7 @@ function parseArgs(argvInput?: string[]): Args {
       }
       case '--depth':
         args.depth = parseDepth(argv[++i])
+        args.depthExplicit = true
         break
     }
   }
@@ -114,8 +141,18 @@ export function main(argvInput?: string[]) {
     process.exit(0)
   }
 
-  if (!args.session) {
-    console.error('Error: --session <id> is required. Use --help for usage.')
+  if (args.chain && args.session) {
+    console.error('Error: --chain and --session are mutually exclusive. Use one or the other.')
+    process.exit(1)
+  }
+
+  if (args.chain && args.depthExplicit) {
+    console.error('Error: --chain does not accept --depth. The chain id is the source of truth for which sessions are included.')
+    process.exit(1)
+  }
+
+  if (!args.chain && !args.session) {
+    console.error('Error: --session <id> or --chain <chain_id> is required. Use --help for usage.')
     process.exit(1)
   }
 
@@ -129,12 +166,19 @@ export function main(argvInput?: string[]) {
       process.exit(1)
     }
 
-    const result = exportSessionText(db, {
-      sessionId: args.session,
-      mode: args.mode,
-      depth: args.depth,
-      range,
-    })
+    const result = exportSessionText(db, args.chain
+      ? {
+          chainId: args.chain,
+          includeSubagents: args.includeSubagents,
+          mode: args.mode,
+          range,
+        }
+      : {
+          sessionId: args.session,
+          mode: args.mode,
+          depth: args.depth,
+          range,
+        })
 
     if (!result.ok) {
       console.error(result.error.message)
