@@ -1739,6 +1739,88 @@ function verifyExportChain(tempRoot: string) {
   console.log('verify: export chain')
 }
 
+function verifyExportChainRange(tempRoot: string) {
+  const tempHome = join(tempRoot, 'export-chain-range-home')
+  const dataDir = join(tempHome, 'data')
+  const transcriptDir = join(tempRoot, 'export-chain-range-transcripts')
+  mkdirSync(dataDir, { recursive: true })
+  mkdirSync(transcriptDir, { recursive: true })
+
+  const dbPath = join(dataDir, 'dashboard.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+
+  // Two transcripts: t1 entries on 2026-05-09, t2 entries on 2026-05-11.
+  const t1 = join(transcriptDir, 't1.jsonl')
+  const t2 = join(transcriptDir, 't2.jsonl')
+  writeFileSync(t1, [
+    JSON.stringify({ type: 'user', timestamp: '2026-05-09T09:00:00.000Z', message: { content: 'old user message' } }),
+    JSON.stringify({ type: 'assistant', timestamp: '2026-05-09T09:00:01.000Z', message: { content: [{ type: 'text', text: 'old agent message' }] } }),
+    '',
+  ].join('\n'))
+  writeFileSync(t2, [
+    JSON.stringify({ type: 'user', timestamp: '2026-05-11T09:00:00.000Z', message: { content: 'recent user message' } }),
+    JSON.stringify({ type: 'assistant', timestamp: '2026-05-11T09:00:01.000Z', message: { content: [{ type: 'text', text: 'recent agent message' }] } }),
+    '',
+  ].join('\n'))
+
+  insertSession(db, 'range-old', {
+    cwd: '/tmp/export-chain-range', transcriptPath: t1, source: 'claude',
+    chainId: 'chain_rng7890a',
+  })
+  insertSession(db, 'range-new', {
+    cwd: '/tmp/export-chain-range', transcriptPath: t2, source: 'claude',
+    chainId: 'chain_rng7890a', predecessorId: 'range-old',
+  })
+
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-09T08:00:00.000Z', '2026-05-09T09:00:01.000Z', 'range-old')
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-11T08:00:00.000Z', '2026-05-11T09:00:01.000Z', 'range-new')
+
+  insertInsight(db, 'range-old', 'old-time insight', 'transcript', '2026-05-09T09:00:02.000Z')
+  insertInsight(db, 'range-new', 'recent-time insight', 'transcript', '2026-05-11T09:00:02.000Z')
+
+  db.close()
+
+  // --- Test 1: conversation mode with --since cuts off old session ---
+  const convResult = runCommand('node', [
+    'lib/cli.js', 'export', '--chain', 'chain_rng7890a',
+    '--mode', 'conversation',
+    '--since', '2026-05-10T00:00:00.000Z',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+
+  assert(convResult.includes('recent user message'),
+    `range-filtered conversation should include recent messages, got: ${convResult.slice(0, 300)}`)
+  assert(!convResult.includes('old user message'),
+    `range-filtered conversation should EXCLUDE old messages, got: ${convResult.slice(0, 300)}`)
+
+  // --- Test 2: insights mode with --since cuts off old insight ---
+  const insResult = runCommand('node', [
+    'lib/cli.js', 'export', '--chain', 'chain_rng7890a',
+    '--mode', 'insights',
+    '--since', '2026-05-10T00:00:00.000Z',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+
+  assert(insResult.includes('recent-time insight'),
+    `range-filtered insights should include recent insight, got: ${insResult.slice(0, 300)}`)
+  assert(!insResult.includes('old-time insight'),
+    `range-filtered insights should EXCLUDE old insight, got: ${insResult.slice(0, 300)}`)
+
+  // --- Test 3: --until upper bound ---
+  const beforeResult = runCommand('node', [
+    'lib/cli.js', 'export', '--chain', 'chain_rng7890a',
+    '--mode', 'conversation',
+    '--until', '2026-05-10T00:00:00.000Z',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  assert(beforeResult.includes('old user message'),
+    `--until should include old messages before cutoff`)
+  assert(!beforeResult.includes('recent user message'),
+    `--until should exclude messages after cutoff`)
+
+  console.log('verify: export chain range')
+}
+
 function verifyRecordsCut(tempRoot: string) {
   const tempHome = join(tempRoot, 'records-cut-home')
   const dataDir = join(tempHome, 'data')
@@ -2825,6 +2907,7 @@ async function main() {
     verifySessionRestore(tempRoot)
     verifySessionExport(tempRoot)
     verifyExportChain(tempRoot)
+    verifyExportChainRange(tempRoot)
     verifyRecordsCut(tempRoot)
     verifyEventDedup(tempRoot)
     verifyInsightExtractionCompatibility()
