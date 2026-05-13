@@ -2232,6 +2232,127 @@ function verifyRecordsCut(tempRoot: string) {
   console.log('verify: records cut')
 }
 
+function verifyRecordsCutChain(tempRoot: string) {
+  const tempHome = join(tempRoot, 'records-cut-chain-home')
+  const dataDir = join(tempHome, 'data')
+  const transcriptDir = join(tempRoot, 'records-cut-chain-transcripts')
+  mkdirSync(dataDir, { recursive: true })
+  mkdirSync(transcriptDir, { recursive: true })
+
+  const dbPath = join(dataDir, 'dashboard.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+
+  // Session A: transcript with "cut start anchor" early + some middle content.
+  const tA = join(transcriptDir, 'sessA.jsonl')
+  writeFileSync(tA, [
+    JSON.stringify({ type: 'user', timestamp: '2026-05-10T09:00:00.000Z', message: { content: 'cut start anchor for chain' } }),
+    JSON.stringify({ type: 'assistant', timestamp: '2026-05-10T09:00:01.000Z', message: { content: [{ type: 'text', text: 'session A middle' }] } }),
+    '',
+  ].join('\n'))
+
+  // Session B: transcript with more middle content + "cut end anchor" late.
+  const tB = join(transcriptDir, 'sessB.jsonl')
+  writeFileSync(tB, [
+    JSON.stringify({ type: 'assistant', timestamp: '2026-05-11T09:00:00.000Z', message: { content: [{ type: 'text', text: 'session B early' }] } }),
+    JSON.stringify({ type: 'user', timestamp: '2026-05-11T09:00:05.000Z', message: { content: 'cut end anchor for chain' } }),
+    JSON.stringify({ type: 'assistant', timestamp: '2026-05-11T09:00:06.000Z', message: { content: [{ type: 'text', text: 'after end anchor (should be excluded)' }] } }),
+    '',
+  ].join('\n'))
+
+  // Subagent C: transcript that should NOT be included in the cut range.
+  const tSub = join(transcriptDir, 'sessSub.jsonl')
+  writeFileSync(tSub, [
+    JSON.stringify({ type: 'user', timestamp: '2026-05-10T09:30:00.000Z', message: { content: 'subagent content (must be excluded)' } }),
+    '',
+  ].join('\n'))
+
+  insertSession(db, 'cut-chain-a', {
+    cwd: '/tmp/cut-chain', transcriptPath: tA, source: 'claude',
+    chainId: 'chain_cab77890',
+  })
+  insertSession(db, 'cut-chain-b', {
+    cwd: '/tmp/cut-chain', transcriptPath: tB, source: 'claude',
+    chainId: 'chain_cab77890', predecessorId: 'cut-chain-a',
+  })
+  insertSession(db, 'cut-chain-sub', {
+    cwd: '/tmp/cut-chain', transcriptPath: tSub, source: 'codex',
+    chainId: 'chain_cab77890', isSubagent: true, parentSessionId: 'cut-chain-a',
+  })
+
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-10T08:00:00.000Z', '2026-05-10T09:00:01.000Z', 'cut-chain-a')
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-11T08:00:00.000Z', '2026-05-11T09:00:06.000Z', 'cut-chain-b')
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-10T09:30:00.000Z', '2026-05-10T09:30:00.000Z', 'cut-chain-sub')
+
+  db.close()
+
+  // --- Test 1: --chain cut works across two main sessions ---
+  const outputPath = join(tempRoot, 'cut-chain-output.md')
+  const stdout = runCommand('node', [
+    'lib/cli.js', 'records', 'cut',
+    '--chain', 'chain_cab77890',
+    '--from', 'cut start anchor for chain',
+    '--to', 'cut end anchor for chain',
+    '--output', outputPath,
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+
+  assert(stdout.includes(`saved: ${outputPath}`),
+    `records cut --chain should print saved path, got: ${stdout.slice(0, 300)}`)
+
+  const saved = readFileSync(outputPath, 'utf8')
+  // Header includes Chain ID
+  assert(saved.includes('chain_cab77890'),
+    `saved output should include chain_cab77890 in header, got: ${saved.slice(0, 500)}`)
+  // Both anchors present
+  assert(saved.includes('cut start anchor for chain'),
+    `saved should include from anchor`)
+  assert(saved.includes('cut end anchor for chain'),
+    `saved should include to anchor`)
+  // Middle content from both sessions
+  assert(saved.includes('session A middle'),
+    `saved should include session A middle content`)
+  assert(saved.includes('session B early'),
+    `saved should include session B early content`)
+  // Order: from anchor first, middle, to anchor last
+  assert(
+    saved.indexOf('cut start anchor for chain') <
+    saved.indexOf('session A middle') &&
+    saved.indexOf('session A middle') <
+    saved.indexOf('session B early') &&
+    saved.indexOf('session B early') <
+    saved.indexOf('cut end anchor for chain'),
+    'records should be in chronological order'
+  )
+  // Records AFTER the to-anchor should NOT appear
+  assert(!saved.includes('after end anchor (should be excluded)'),
+    `records after to-anchor should be excluded`)
+  // Subagent content should NOT appear
+  assert(!saved.includes('subagent content (must be excluded)'),
+    `subagent records must be excluded from chain cut`)
+
+  // --- Test 2: invalid chain id format → error ---
+  const invalidResult = spawnNode(
+    [join(repoRoot, 'lib/cli.js'), 'records', 'cut',
+     '--chain', 'not-a-chain', '--from', 'x', '--to', 'y'],
+    { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
+  )
+  assert.notEqual(invalidResult.status, 0, 'invalid chain id should fail')
+
+  // --- Test 3: --chain + --session is rejected ---
+  const conflictResult = spawnNode(
+    [join(repoRoot, 'lib/cli.js'), 'records', 'cut',
+     '--chain', 'chain_cab77890', '--session', 'cut-chain-a',
+     '--from', 'x', '--to', 'y'],
+    { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
+  )
+  assert.notEqual(conflictResult.status, 0, '--chain + --session combo should fail')
+
+  console.log('verify: records cut chain')
+}
+
 function verifyEventDedup(tempRoot: string) {
   const dbPath = join(tempRoot, 'event-dedup.db')
   const db = new Database(dbPath)
@@ -2909,6 +3030,7 @@ async function main() {
     verifyExportChain(tempRoot)
     verifyExportChainRange(tempRoot)
     verifyRecordsCut(tempRoot)
+    verifyRecordsCutChain(tempRoot)
     verifyEventDedup(tempRoot)
     verifyInsightExtractionCompatibility()
     verifyUserInputNoiseFiltering()

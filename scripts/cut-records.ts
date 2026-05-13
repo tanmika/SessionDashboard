@@ -2,16 +2,26 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { getDbPath } from '../shared/config.js'
+import { isChainId } from '../shared/chain-id.js'
 import type { SessionExportFailure, SessionTranscriptRecord } from '../shared/types.js'
-import { readSessionTranscriptRecords, resolveExactSession, resolveSession, type ExportSession } from '../server/services/session-export.js'
+import {
+  readSessionTranscriptRecords,
+  resolveExactSession,
+  resolveSession,
+  resolveSessionsByChain,
+  type ExportSession,
+} from '../server/services/session-export.js'
 
 interface Args {
   help: boolean
   from?: string
   to?: string
   session?: string
+  chain?: string
   output?: string
 }
+
+type TaggedRecord = SessionTranscriptRecord & { source_session_id: string }
 
 interface MatchCandidate {
   index: number
@@ -31,8 +41,15 @@ Required:
 Options:
   --session <id>      Session ID or unique prefix.
                       Defaults to exact SESSION_DASHBOARD_SESSION_ID when set.
+                      Mutually exclusive with --chain.
+  --chain <id>        Chain id (chain_xxxxxxxx). Cuts a range that spans the
+                      transcripts of all main-zone sessions in the chain
+                      (subagent transcripts are excluded). Records are merged
+                      and sorted chronologically before matching --from/--to.
+                      Mutually exclusive with --session.
   --output <path>     Markdown file path.
                       Defaults to .session-dashboard/records/<timestamp>-<session>.md
+                      (or <timestamp>-<chain-id>.md in chain mode).
   --help              Show this help
 
 Behavior:
@@ -58,6 +75,9 @@ function parseArgs(argvInput?: string[]): Args {
         break
       case '--session':
         args.session = argv[++i]
+        break
+      case '--chain':
+        args.chain = argv[++i]
         break
       case '--output':
         args.output = argv[++i]
@@ -144,6 +164,13 @@ function defaultOutputPath(session: ExportSession, firstRecord: SessionTranscrip
   return join(dir, `${timestamp}-${session.session_id.slice(0, 8)}.md`)
 }
 
+function defaultChainOutputPath(chainId: string, firstRecord: SessionTranscriptRecord): string {
+  const dir = join(process.cwd(), '.session-dashboard', 'records')
+  mkdirSync(dir, { recursive: true })
+  const timestamp = safeTimestamp(firstRecord.timestamp || new Date().toISOString())
+  return join(dir, `${timestamp}-${chainId}.md`)
+}
+
 function markdownEscapeFence(text: string): string {
   return text.replace(/```/g, '``\\`')
 }
@@ -177,6 +204,38 @@ function formatSegment(session: ExportSession, selected: SessionTranscriptRecord
   ].join('\n').trimEnd() + '\n'
 }
 
+function formatChainRecord(record: TaggedRecord): string {
+  return [
+    `## ${roleLabel(record.role)} | ${record.timestamp} | session: ${record.source_session_id}`,
+    '',
+    markdownEscapeFence(record.text),
+    '',
+  ].join('\n')
+}
+
+function formatChainSegment(
+  chainId: string,
+  sessions: ExportSession[],
+  selected: TaggedRecord[]
+): string {
+  const first = selected[0]
+  const last = selected[selected.length - 1]
+  return [
+    '# Chain Record Segment',
+    '',
+    `chain: ${chainId}`,
+    `sessions: ${sessions.length} main`,
+    `spanning: ${sessions.map((s) => s.session_id).join(', ')}`,
+    `from: ${roleLabel(first.role)} ${first.timestamp}`,
+    `to: ${roleLabel(last.role)} ${last.timestamp}`,
+    `records: ${selected.length}`,
+    '',
+    '# Conversation',
+    '',
+    ...selected.map(formatChainRecord),
+  ].join('\n').trimEnd() + '\n'
+}
+
 function printFailure(error: SessionExportFailure) {
   console.error(error.message)
   if (error.matching_sessions?.length) {
@@ -204,16 +263,70 @@ export function main(argvInput?: string[]) {
     process.exit(1)
   }
 
+  if (args.chain && args.session) {
+    console.error('Error: --chain and --session are mutually exclusive.')
+    process.exit(1)
+  }
+
+  if (args.chain && !isChainId(args.chain)) {
+    console.error(`Error: --chain expects a chain id of the form chain_xxxxxxxx, got "${args.chain}"`)
+    process.exit(1)
+  }
+
   const envSessionId = currentSessionId()
   const sessionId = args.session || envSessionId
-  if (!sessionId) {
-    console.error('Error: --session <id> is required when SESSION_DASHBOARD_SESSION_ID is not set.')
+  if (!args.chain && !sessionId) {
+    console.error('Error: --session <id> is required when SESSION_DASHBOARD_SESSION_ID is not set (or use --chain <id>).')
     process.exit(1)
   }
 
   const db = new Database(getDbPath(), { readonly: true })
   try {
-    const session = args.session ? resolveSession(db, sessionId) : resolveExactSession(db, sessionId)
+    if (args.chain) {
+      const sessions = resolveSessionsByChain(db, args.chain, { includeSubagents: false })
+      if ('error' in sessions) {
+        printFailure(sessions)
+        process.exit(1)
+      }
+
+      const allRecords: TaggedRecord[] = []
+      for (const session of sessions) {
+        const t = readSessionTranscriptRecords(session)
+        if (!t.ok) {
+          printFailure(t.error)
+          process.exit(1)
+        }
+        for (const r of t.records) {
+          allRecords.push({ ...r, source_session_id: session.session_id })
+        }
+      }
+      allRecords.sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+
+      const range = findUniqueRange(allRecords, args.from, args.to)
+      if (!range.ok) {
+        console.error(`Error: from/to text did not identify exactly one record range. Candidate ranges: ${range.rangeCount}`)
+        printCandidates('from', range.fromMatches)
+        printCandidates('to', range.toMatches)
+        process.exit(1)
+      }
+
+      const selected = allRecords.slice(range.from.index, range.to.index + 1)
+      const content = formatChainSegment(args.chain, sessions, selected)
+      const outputPath = resolve(args.output || defaultChainOutputPath(args.chain, selected[0]))
+      const outputDir = dirname(outputPath)
+      if (outputDir && !existsSync(outputDir)) mkdirSync(outputDir, { recursive: true })
+      writeFileSync(outputPath, content, 'utf8')
+
+      console.log(`saved: ${outputPath}`)
+      console.log(`records: ${selected.length}`)
+      console.log(`chars: ${content.length}`)
+      console.log(`estimated_tokens: ${estimateTokens(content)}`)
+      console.log(`from: ${roleLabel(selected[0].role)} ${selected[0].timestamp}`)
+      console.log(`to: ${roleLabel(selected[selected.length - 1].role)} ${selected[selected.length - 1].timestamp}`)
+      return
+    }
+
+    const session = args.session ? resolveSession(db, sessionId!) : resolveExactSession(db, sessionId!)
     if ('error' in session) {
       printFailure(session)
       process.exit(1)
