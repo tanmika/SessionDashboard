@@ -1316,6 +1316,85 @@ function verifyInsightsReadChain(tempRoot: string) {
   console.log('verify: insights read chain')
 }
 
+function verifyInsightsSessionChainShortcut(tempRoot: string) {
+  const tempHome = join(tempRoot, 'session-chain-shortcut-home')
+  const dataDir = join(tempHome, 'data')
+  mkdirSync(dataDir, { recursive: true })
+  const dbPath = join(dataDir, 'dashboard.db')
+  const db = new Database(dbPath)
+  applySchema(db)
+
+  // Two-session chain.
+  insertSession(db, 'session-alpha', {
+    cwd: '/tmp/sc-shortcut', transcriptPath: '', source: 'claude',
+    chainId: 'chain_shrt5678',
+  })
+  insertSession(db, 'session-beta', {
+    cwd: '/tmp/sc-shortcut', transcriptPath: '', source: 'claude',
+    chainId: 'chain_shrt5678', predecessorId: 'session-alpha',
+  })
+
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-10T08:00:00.000Z', '2026-05-10T09:00:00.000Z', 'session-alpha')
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ? WHERE session_id = ?')
+    .run('2026-05-11T08:00:00.000Z', '2026-05-11T09:00:00.000Z', 'session-beta')
+
+  insertInsight(db, 'session-alpha', 'alpha insight', 'transcript', '2026-05-10T09:00:00.000Z')
+  insertInsight(db, 'session-beta', 'beta insight', 'transcript', '2026-05-11T09:00:00.000Z')
+
+  // Also seed a session with EMPTY chain_id to test the legacy-row error path.
+  insertSession(db, 'session-legacy', {
+    cwd: '/tmp/sc-shortcut', transcriptPath: '', source: 'claude',
+    // chainId intentionally omitted → defaults to ''
+  })
+
+  db.close()
+
+  // --- Test 1: --session <full id> --chain dispatches to readChain ---
+  const result1 = runCommand('node', [
+    'lib/cli.js', 'insights', '--session', 'session-alpha', '--chain', '--json',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  const parsed1 = JSON.parse(result1)
+  assert.equal(parsed1.chain.chain_id, 'chain_shrt5678',
+    `--session ... --chain should resolve to chain_shrt5678, got ${parsed1.chain?.chain_id}`)
+  assert.deepEqual(parsed1.chain.main_session_ids.sort(), ['session-alpha', 'session-beta'].sort())
+  assert.equal(parsed1.insights.length, 2)
+
+  // --- Test 2: --session <prefix> --chain ---
+  const result2 = runCommand('node', [
+    'lib/cli.js', 'insights', '--session', 'session-be', '--chain', '--json',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  const parsed2 = JSON.parse(result2)
+  assert.equal(parsed2.chain.chain_id, 'chain_shrt5678',
+    `--session prefix should resolve to chain_shrt5678, got ${parsed2.chain?.chain_id}`)
+
+  // --- Test 3: legacy session (chain_id='') → clear error pointing to repair ---
+  const legacyResult = spawnNode(
+    [join(repoRoot, 'lib/cli.js'), 'insights', '--session', 'session-legacy', '--chain', '--json'],
+    { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
+  )
+  assert.notEqual(legacyResult.status, 0, 'legacy session should fail')
+  assert(
+    legacyResult.stderr.includes('chain_id') &&
+    (legacyResult.stderr.includes('repair') || legacyResult.stderr.includes('rebuild-chains')),
+    `legacy session error should mention repair, got: ${legacyResult.stderr.slice(0, 200)}`
+  )
+
+  // --- Test 4: unknown session id --chain → error ---
+  const unknownResult = spawnNode(
+    [join(repoRoot, 'lib/cli.js'), 'insights', '--session', 'session-nope', '--chain', '--json'],
+    { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome }, encoding: 'utf8' }
+  )
+  assert.notEqual(unknownResult.status, 0, 'unknown session should fail')
+  assert(
+    unknownResult.stderr.toLowerCase().includes('not found') ||
+    unknownResult.stderr.toLowerCase().includes('no session'),
+    `unknown session error should mention not-found, got: ${unknownResult.stderr.slice(0, 200)}`
+  )
+
+  console.log('verify: insights session chain shortcut')
+}
+
 function verifyCodexHook() {
   const stdout = runCommand('bash', ['hooks/codex-session-hook.sh'], {
     env: { ...process.env, SESSION_DASHBOARD_URL: 'http://127.0.0.1:9' },
@@ -2646,6 +2725,7 @@ async function main() {
     verifyInsightsListChainGrep(tempRoot)
     verifyInsightsListChainScopes(tempRoot)
     verifyInsightsReadChain(tempRoot)
+    verifyInsightsSessionChainShortcut(tempRoot)
     verifyCodexHook()
     verifySessionRestore(tempRoot)
     verifySessionExport(tempRoot)

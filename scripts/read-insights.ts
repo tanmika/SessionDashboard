@@ -129,7 +129,8 @@ Search and time filters:
 Output:
   --limit <n>        Max sessions for --list, or max primary insights for content view (default: 50)
   --offset <n>       Skip first n primary insights in content view (newest first)
-  --chain [id]       Without value: in --list mode, group sessions by chain.
+  --chain [id]       Bare flag with --list: group sessions by chain.
+                     Bare flag with --session <id>: read the chain containing that session.
                      With chain_xxxxxxxx value: read insights for a specific chain.
                      Use space-separated form: --chain chain_xxxxxxxx (not --chain=...).
   --include-subagents With chain queries, include subagent sessions (default: main only).
@@ -175,6 +176,9 @@ Examples:
 
   # Read all insights for a specific chain
   session-dashboard insights --chain chain_a3k7m2pq
+
+  # Read the chain containing a known session
+  session-dashboard insights --session a1b2c3d4 --chain
 
   # Paginate: get next page
   session-dashboard insights --session a1b2 --limit 30 --offset 30
@@ -475,24 +479,6 @@ function filterSessionsByRange(db: Database.Database, sessions: SessionRow[], ra
       getChangedAtInRange(db, b, range).localeCompare(getChangedAtInRange(db, a, range)) ||
       b.last_activity.localeCompare(a.last_activity)
     ))
-}
-
-function getChain(db: Database.Database, startSessionId: string): string[] {
-  const chain = [startSessionId]
-  const stmtPredecessor = db.prepare(
-    'SELECT predecessor_id FROM sessions WHERE session_id = ?'
-  )
-  let current = startSessionId
-  const maxDepth = 5
-
-  for (let i = 0; i < maxDepth; i++) {
-    const row = stmtPredecessor.get(current) as { predecessor_id: string } | undefined
-    if (!row?.predecessor_id) break
-    chain.push(row.predecessor_id)
-    current = row.predecessor_id
-  }
-
-  return chain
 }
 
 function countBySource(db: Database.Database, sessionId: string, sourcePredicate: string, range?: TimeRange): number {
@@ -1094,9 +1080,7 @@ function cmdList(db: Database.Database, sessions: ListedSession[], args: Args, r
 }
 
 function cmdInsights(db: Database.Database, targetSession: SessionRow, args: Args) {
-  const sessionIds = args.chain
-    ? getChain(db, targetSession.session_id)
-    : [targetSession.session_id]
+  const sessionIds = [targetSession.session_id]
 
   const placeholders = sessionIds.map(() => '?').join(',')
   const range = resolveTimeRange({ range: args.range, since: args.since, until: args.until })
@@ -1174,8 +1158,6 @@ function cmdInsights(db: Database.Database, targetSession: SessionRow, args: Arg
     totalMatched,
     attachedUserPrompts: attachedUserIds.size,
     totalUserPrompts,
-    isChain: args.chain,
-    sessionCount: sessionIds.length,
     range,
   })
 }
@@ -1186,8 +1168,6 @@ interface OutputMeta {
   totalMatched?: number
   attachedUserPrompts: number
   totalUserPrompts: number
-  isChain: boolean
-  sessionCount: number
   range?: TimeRange
 }
 
@@ -1220,7 +1200,6 @@ function outputInsights(
       limit: args.limit,
       ...(args.grep ? { grep: args.grep } : {}),
       ...(meta.range ? { range: meta.range } : {}),
-      ...(meta.isChain ? { chain_sessions: meta.sessionCount } : {}),
       ...(newestTimestamp ? { newest_timestamp: newestTimestamp } : {}),
       ...(oldestTimestamp ? { oldest_timestamp: oldestTimestamp } : {}),
       insights: insights.map(ins => ({
@@ -1245,9 +1224,6 @@ function outputInsights(
   }
   console.log(`[${headerParts.join(' | ')}]`)
 
-  if (meta.isChain) {
-    console.log(`[chain: ${meta.sessionCount} sessions]`)
-  }
   if (meta.range) {
     console.log(`[range: ${meta.range.since || '(beginning)'} to ${meta.range.until || '(open)'}]`)
   }
@@ -1327,8 +1303,8 @@ export function main(argvInput?: string[]) {
     process.exit(1)
   }
 
-  if (args.chain && !args.list) {
-    console.error('Error: --chain (bare flag) is only valid with --list. Use --chain <id> to read a specific chain.')
+  if (args.chain && !args.list && !args.session) {
+    console.error('Error: --chain (bare flag) requires --list (list chains) or --session <id> (read the chain containing that session). Use --chain <id> to read a specific chain.')
     process.exit(1)
   }
 
@@ -1343,6 +1319,34 @@ export function main(argvInput?: string[]) {
   }
 
   const db = openDb()
+
+  if (args.session && args.chain) {
+    // Look up the session's chain_id, then route to readChain.
+    const rows = db.prepare(`
+      SELECT session_id, chain_id FROM sessions
+      WHERE session_id = ? OR session_id LIKE ?
+      ORDER BY last_activity DESC
+    `).all(args.session, `${args.session}%`) as Array<{ session_id: string; chain_id: string }>
+
+    if (rows.length === 0) {
+      console.error(`Error: no session matching "${args.session}".`)
+      db.close()
+      process.exit(1)
+    }
+    if (rows.length > 1 && rows[0].session_id !== args.session) {
+      console.error(`Error: session prefix "${args.session}" matched ${rows.length} sessions. Use a longer prefix.`)
+      db.close()
+      process.exit(1)
+    }
+    const session = rows[0]
+    if (!session.chain_id) {
+      console.error(`Error: session "${session.session_id}" has no chain_id (legacy row). Run 'repair-dashboard --rebuild-chains' to backfill.`)
+      db.close()
+      process.exit(1)
+    }
+    args.chainId = session.chain_id
+    // Fall through to the existing args.chainId dispatch below.
+  }
 
   if (args.chainId) {
     const result = readChain(db, args, range)
