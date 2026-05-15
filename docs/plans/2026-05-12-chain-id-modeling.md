@@ -3,12 +3,12 @@
 > **For Claude:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task.
 > Tests use the project's smoke harness (`scripts/verify-smoke.ts`). For each task, follow the TDD-shaped flow described in **Testing model** below.
 
-**Goal:** Promote `chain = 一次真实主会话` to a first-class concept by adding a persisted `chain_id` column, wiring it through write paths, repair, and all CLI commands (`insights`, `export`, `records cut`), so that a真实主会话 (and its subagents) can be queried as one unit instead of reconstructed from `predecessor_id` at runtime.
+**Goal:** Promote `chain = 一条主会话连续链及其派生 subagent` to a first-class concept by adding a persisted `chain_id` column, wiring it through write paths, repair, and all CLI commands (`insights`, `export`, `records cut`). `predecessor_id` defines the main-session sequence, `parent_session_id` defines subagent ownership, and `chain_id` provides the shared lookup id for both zones.
 
 **Architecture:**
 - Add `sessions.chain_id` column (`TEXT NOT NULL DEFAULT ''`).
-- Write rule: new session → if `predecessor_id` set, inherit; if `is_subagent`, inherit from parent's `chain_id`; otherwise generate fresh `chain_xxxxxxxx`.
-- Read rule: chain queries are SQL aggregations on `WHERE chain_id = ?`. Subagents live under the same `chain_id` but are surfaced in a separate "subagent 区" of the chain view.
+- Write rule: new main session → if `predecessor_id` is set, inherit that predecessor's `chain_id`; otherwise generate fresh `chain_xxxxxxxx`. New subagent session → inherit its parent's `chain_id`.
+- Read rule: chain queries are SQL aggregations on `WHERE chain_id = ?`. Main sessions and subagents share the same `chain_id`, while query output keeps them in separate main / subagent zones.
 - All new CLI surface uses `--chain` (no参 → group sessions by chain in `--list`; with参 → read/export/cut by chain id).
 
 **Tech Stack:**
@@ -49,6 +49,9 @@ When a task only changes types / docs (no behaviour change), the TDD step is ski
 
 ## Conventions used in this plan
 
+- `chain_id` = the shared id for a main-session continuity chain and its derived subagents.
+- `predecessor_id` = the main-session predecessor link; only main sessions participate in this continuity sequence.
+- `parent_session_id` = the subagent ownership link; subagents inherit the parent's `chain_id` but are not counted as main sessions.
 - "main 区" = sessions in a chain with `is_subagent = 0`.
 - "subagent 区" = sessions in a chain with `is_subagent = 1`.
 - Chain query commands默认 only operate on main 区 unless `--include-subagents` is passed.
@@ -164,8 +167,8 @@ git commit -m "feat(chain): add chain_id column to sessions table"
 In `shared/types.ts`, add inside the `Session` interface right after the `predecessor_id?` line:
 
 ```ts
-  // Chain id assigned at insert time; immutable thereafter.
-  // Sessions sharing a chain_id are one real main session (+ its subagents).
+  // Chain id assigned at insert time and stabilized after predecessor / parent links are known.
+  // Sessions sharing a chain_id are one main-session chain plus its subagents.
   chain_id?: string
 ```
 
@@ -1473,7 +1476,7 @@ Use @superpowers:finishing-a-development-branch when ready to merge.
 
 1. **Never** put a `Co-Authored-By` line in commit messages (project rule, breaks CI).
 2. **Never** force-push. **Never** `git push` automatically — leave that to the user.
-3. The chain_id field is **immutable** by design. Write paths only assign once. Updates are reserved for `repair --rebuild-chains`.
+3. The chain_id field is **stable** by design after the session relationship is known. Main-session handoff may replace a fresh id with the predecessor's id, subagent discovery may replace a fresh id with the parent's id, and full recomputation is reserved for `repair --rebuild-chains`.
 4. Every new query that operates on chains MUST default to `is_subagent = 0` (main 区). Subagent inclusion is opt-in.
 5. When `chain_id == ''` is encountered at read time (legacy data), treat it as "no chain known, fall back to single-session behavior" and surface a one-line hint pointing to `repair --rebuild-chains`. Do NOT silently invent a chain id at read time.
 6. The smoke test order matters when fixtures share temp paths. New `verifyChainXxx(tempRoot)` functions must use unique subdirectories under `tempRoot` (see how `verifyInsightsCwdList` does `join(tempRoot, 'cwd-list-home')`).

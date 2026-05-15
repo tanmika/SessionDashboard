@@ -22,52 +22,53 @@ export const INSIGHT_USAGE_MANUAL = `## Session Insight Recovery（强制执行�
 
 ### 你的 session_id
 
-通过 SessionStart hook 自动注入（格式: "Your current session_id is: xxx"）。如果上下文中找不到，运行 \`session-dashboard insights --list\` 查看当前目录相关的最近活跃 session；需要跨目录查找时使用 \`session-dashboard insights --list --all\`。
+通过 SessionStart hook 自动注入（格式: "Your current session_id is: xxx"）。如果上下文中找不到，先运行 \`session-dashboard insights --list --chain\` 查看当前目录最近的 chain；需要跨目录查找时使用 \`session-dashboard insights --list --chain --all\`。
 
 ### 执行步骤
 
-**第一步**：读取最近的 insights，评估总量：
-\`\`\`bash
-session-dashboard insights --session <your-session-id> --limit 30
-\`\`\`
-
-**第二步**：根据尾部统计（如 "[30 / 1121 insights shown]"）决定是否翻页加载更多：
-\`\`\`bash
-session-dashboard insights --session <your-session-id> --limit 30 --offset 30
-\`\`\`
-
-**第三步**（可选）：如果是从 /new 创建的新 session，用 --chain 追溯前序：
+**第一步**：按当前 session 所属 chain 读取最近 insights。chain 读取默认从新到旧，优先恢复最近决策和状态：
 \`\`\`bash
 session-dashboard insights --session <your-session-id> --chain --limit 50
 \`\`\`
 
-### 按 chain 读取（推荐）
-
-如果你使用过 /clear-and-continue 等指令，多个 session 会归属同一个 chain（同一逻辑工作单元）。按 chain 读取通常比读取单个 session 更有价值，因为关联会话会被合并展示。
-
+**第二步**：根据尾部统计（如 "[50 / 180 primary insights shown]"）决定是否分页加载更多：
 \`\`\`bash
-# 当前 session 的 chain 全量读取（最常用）
-session-dashboard insights --session <your-session-id> --chain
-
-# 按 chain id 直接读取
-session-dashboard insights --chain chain_xxxxxxxx
-
-# 列出当前目录最近的 chain
-session-dashboard insights --list --chain
+session-dashboard insights --session <your-session-id> --chain --limit 50 --offset 50
 \`\`\`
 
-默认仅包含 main 区会话；如果需要把 subagent 的 insight 一并纳入，追加 \`--include-subagents\`。
-
-### 导出与切片（按需）
-
-\`session-dashboard export\` 与 \`session-dashboard records cut\` 同样支持 \`--chain\`，可按 chain 维度导出会话或切片原始记录：
-
+**第三步**：如果上下文中找不到当前 session_id，先列出当前目录最近的 chain：
 \`\`\`bash
-session-dashboard export --chain chain_xxxxxxxx --mode insights
-session-dashboard records cut --chain chain_xxxxxxxx --from "..." --to "..."
+session-dashboard insights --list --chain --limit 20
 \`\`\`
 
-其他：\`--grep "关键词"\` 过滤、\`--list\` 查看当前目录相关 session、\`--all\` 跨目录查看。更多参数: \`session-dashboard insights --help\``
+如果当前目录查不到，再按需跨目录查看：
+\`\`\`bash
+session-dashboard insights --list --chain --all --limit 50
+\`\`\`
+
+### 恢复范围
+
+默认只读取 main 区会话。只有当前任务明确依赖 subagent 调研、并行执行结果，或 main 区 insight 明确缺少 subagent 细节时，才追加 \`--include-subagents\`：
+\`\`\`bash
+session-dashboard insights --session <your-session-id> --chain --include-subagents --limit 80
+\`\`\`
+
+恢复目标是拿到可继续工作的最小信息：
+1. 当前任务
+2. 用户已经确认的规则和否定过的方案
+3. 已完成动作
+4. 已修改文件
+5. 已运行验证
+6. 未完成事项
+7. 下一步动作
+
+### 禁止默认读取原文
+
+上下文压缩恢复时，不读取完整 conversation，不使用 \`export --mode conversation\`，也不把原始对话展开到当前会话。
+
+如 insight 不足，只继续读取更多 insight 页。只有用户明确要求核对原始措辞、截取原始记录、复原某段对话时，才使用 \`records cut\` 或 \`export\`，并且输出到文件，不直接打印完整正文。
+
+其他：\`--grep "关键词"\` 过滤、\`--list --chain\` 查看当前目录相关 chain、\`--all\` 跨目录查看。更多参数: \`session-dashboard insights --help\``
 
 /** Claude Code specific additions (subagent pattern, output-style) */
 export const CLAUDE_SPECIFIC_NOTES = `

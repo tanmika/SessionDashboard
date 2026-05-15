@@ -129,8 +129,8 @@ export interface Session {
   parent_session_id?: string
   // Predecessor session id (set during auto-handoff on context clear)
   predecessor_id?: string
-  // Chain id assigned at insert time; immutable thereafter.
-  // Sessions sharing a chain_id are one real main session (+ its subagents).
+  // Chain id assigned at insert time and stabilized after predecessor / parent links are known.
+  // Sessions sharing a chain_id are one main-session chain plus its subagents.
   chain_id?: string
   // Runtime tracking (not persisted)
   active_tools: number
