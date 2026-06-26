@@ -339,10 +339,11 @@ export class ZcodeWatcher {
     // zcode has no explicit task_started/task_complete events. A request with
     // startedAt but no completedAt is in flight → active. A completed request
     // → inactive. This mirrors Codex's passive model.
+    if (startedAt) {
+      this.callbacks.onStateChange(state.sessionId, 'active', startedAt)
+    }
     if (completedAt) {
       this.callbacks.onStateChange(state.sessionId, 'inactive', completedAt)
-    } else if (startedAt) {
-      this.callbacks.onStateChange(state.sessionId, 'active', startedAt)
     }
 
     // ─── User input (request.messages role=user) ───
@@ -366,9 +367,18 @@ export class ZcodeWatcher {
       this.extractAndEmitInsights(state, responseText, completedAt || startedAt || timestamp)
     }
 
-    // ─── Event (raw, for the timeline) ───
-    const eventName = completedAt ? 'task_complete' : 'task_started'
-    this.callbacks.onEvent(state.sessionId, eventName, timestamp, JSON.stringify(obj))
+    // ─── Events (raw, for the timeline) ───
+    // Each rollout record is one complete request/response cycle. Emit a
+    // task_started (at startedAt) and task_complete (at completedAt) pair so
+    // the timeline mirrors Codex's event sequence instead of a single point.
+    // A record still in flight (no completedAt yet) emits only task_started.
+    const rawPayload = JSON.stringify(obj)
+    if (startedAt) {
+      this.callbacks.onEvent(state.sessionId, 'task_started', startedAt, rawPayload)
+    }
+    if (completedAt) {
+      this.callbacks.onEvent(state.sessionId, 'task_complete', completedAt, rawPayload)
+    }
   }
 
   private extractAndEmitInsights(state: RolloutState, text: string, timestamp: string) {
