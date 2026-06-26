@@ -102,6 +102,14 @@ interface ChainReadResult {
   total_user_prompts: number
 }
 
+type ChainDisplayItem = {
+  kind: 'primary' | 'user'
+  content: string
+  timestamp: string
+  source_session: string
+  id?: number
+}
+
 const HELP = `
 Session Dashboard — Insight Recovery CLI
 
@@ -963,16 +971,42 @@ function printChainRead(result: ChainReadResult, args: Args) {
   }
   console.log('─'.repeat(80))
 
-  if (insights.length === 0) {
+  const displayItems: ChainDisplayItem[] = [
+    ...insights.map((ins) => ({
+      kind: 'primary' as const,
+      content: ins.content,
+      timestamp: ins.timestamp,
+      source_session: ins.source_session,
+      id: ins.id,
+    })),
+    ...user_prompts.map((prompt) => ({
+      kind: 'user' as const,
+      content: prompt.content,
+      timestamp: prompt.timestamp,
+      source_session: prompt.source_session,
+    })),
+  ].sort((a, b) => (
+    b.timestamp.localeCompare(a.timestamp) ||
+    (b.id ?? 0) - (a.id ?? 0) ||
+    a.kind.localeCompare(b.kind) ||
+    a.source_session.localeCompare(b.source_session)
+  ))
+
+  if (displayItems.length === 0) {
     if (args.grep) {
       console.log(`No primary insights matched grep "${args.grep}".`)
+    } else if (total_user_prompts > 0) {
+      console.log(`No primary insights found. This chain has ${total_user_prompts} user prompts recorded.`)
     } else {
       console.log('No primary insights found in this chain.')
     }
   } else {
-    for (const ins of insights) {
-      console.log(`--- [${ins.source_session.slice(0, 10)}] ---`)
-      console.log(ins.content)
+    for (const item of displayItems) {
+      const tags = item.kind === 'user'
+        ? ['user', item.source_session.slice(0, 10)]
+        : [item.source_session.slice(0, 10)]
+      console.log(`--- [${tags.join(' | ')}] ---`)
+      console.log(item.content)
       console.log()
     }
   }
@@ -990,9 +1024,9 @@ function printChainRead(result: ChainReadResult, args: Args) {
   }
   if (total_user_prompts > 0) {
     if (user_prompts.length === total_user_prompts) {
-      parts.push(`${total_user_prompts} user prompts`)
+      parts.push(`+${total_user_prompts} user prompts shown`)
     } else {
-      parts.push(`${user_prompts.length} / ${total_user_prompts} user prompts shown`)
+      parts.push(`+${user_prompts.length} / ${total_user_prompts} user prompts shown`)
     }
   }
   if (args.grep) {

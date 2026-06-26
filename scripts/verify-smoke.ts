@@ -1183,7 +1183,7 @@ function verifyInsightsReadChain(tempRoot: string) {
 
   // Insights
   insertInsight(db, 'main-1', 'main-1 first insight', 'transcript', '2026-05-10T09:00:00.000Z')
-  insertInsight(db, 'main-1', 'main-1 user prompt', 'user', '2026-05-10T08:30:00.000Z')
+  insertInsight(db, 'main-1', 'main-1 user prompt', 'user', '2026-05-10T09:30:00.000Z')
   insertInsight(db, 'main-2', 'main-2 latest insight', 'transcript', '2026-05-11T09:00:00.000Z')
   insertInsight(db, 'sub-1', 'subagent insight (excluded by default)', 'transcript', '2026-05-10T10:00:00.000Z')
 
@@ -1244,6 +1244,21 @@ function verifyInsightsReadChain(tempRoot: string) {
   assert.equal(defaultParsed.user_prompts.length, 1)
   assert.equal(defaultParsed.user_prompts[0].content, 'main-1 user prompt')
   assert.equal(defaultParsed.user_prompts[0].source_session, 'main-1')
+
+  // Text output should mirror single-session insight recovery: user prompts
+  // are rendered, not merely counted in the footer.
+  const defaultText = runCommand('node', [
+    'lib/cli.js', 'insights', '--chain', 'chain_test1234',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  assert(defaultText.includes('--- [user | main-1] ---'),
+    `chain text output should tag user prompts with source session, got: ${defaultText.slice(0, 500)}`)
+  assert(defaultText.includes('main-1 user prompt'),
+    `chain text output should include user prompt content, got: ${defaultText.slice(0, 500)}`)
+  assert(
+    defaultText.indexOf('main-2 latest insight') < defaultText.indexOf('main-1 user prompt') &&
+    defaultText.indexOf('main-1 user prompt') < defaultText.indexOf('main-1 first insight'),
+    `chain text output should merge primary insights and user prompts newest-first, got: ${defaultText.slice(0, 800)}`
+  )
 
   // Envelope shape (Cleanup #1): with no filters active, total_matched_primary
   // must be ABSENT and chain.insights_count is the RAW count (matches
@@ -1327,6 +1342,15 @@ function verifyInsightsReadChain(tempRoot: string) {
     `user_prompts[0] should be newest (prompt 5), got "${promptLimitParsed.user_prompts[0].content}"`)
   assert.equal(promptLimitParsed.user_prompts[1].content, 'prompt 4',
     `user_prompts[1] should be next-newest (prompt 4), got "${promptLimitParsed.user_prompts[1].content}"`)
+
+  const promptLimitText = runCommand('node', [
+    'lib/cli.js', 'insights', '--chain', 'chain_pq2pq2pq', '--limit', '2',
+  ], { env: { ...process.env, SESSION_DASHBOARD_HOME: tempHome } })
+  assert(promptLimitText.includes('prompt 5'), `chain text output should include newest user prompt, got: ${promptLimitText.slice(0, 500)}`)
+  assert(promptLimitText.includes('prompt 4'), `chain text output should include second-newest user prompt, got: ${promptLimitText.slice(0, 500)}`)
+  assert(!promptLimitText.includes('prompt 3'), `chain text output should honor user prompt pagination, got: ${promptLimitText.slice(0, 500)}`)
+  assert(promptLimitText.includes('+2 / 5 user prompts shown'),
+    `chain text footer should report paginated user prompts, got: ${promptLimitText.slice(0, 500)}`)
 
   // --- Test 7 (Cleanup #1): when filters ARE active, envelope exposes
   // total_matched_primary and chain.insights_count stays as raw count.
