@@ -4,7 +4,7 @@ import { extractInsightBlocks, sanitizeUserInput } from '../server/utils/insight
 import { generateChainId } from '../shared/chain-id.js'
 import { getDbPath } from '../shared/config.js'
 
-type Source = 'claude' | 'codex'
+type Source = 'claude' | 'codex' | 'zcode'
 type InsightSource = 'transcript' | 'user'
 
 type CandidateInsight = {
@@ -196,11 +196,61 @@ function collectClaudeInsights(path: string): CandidateInsight[] {
   return results
 }
 
+// ZCode rollout is request/response JSONL: insights live in response.text,
+// user input in request.messages (role=user). Same shape as the watcher.
+function collectZcodeInsights(path: string): CandidateInsight[] {
+  const results: CandidateInsight[] = []
+  const lines = readFileSync(path, 'utf8').split('\n')
+  const seenUserText = new Set<string>()
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    try {
+      const obj = JSON.parse(trimmed)
+      const timestamp = obj.completedAt || obj.startedAt || new Date().toISOString()
+
+      // request.messages accumulates full history on each request — dedup user text.
+      const messages = obj.request?.messages
+      if (Array.isArray(messages)) {
+        for (const msg of messages) {
+          if (msg?.role !== 'user') continue
+          const text = typeof msg.content === 'string'
+            ? msg.content
+            : Array.isArray(msg.content)
+              ? msg.content
+                  .filter((b: any) => b && b.type === 'text' && typeof b.text === 'string')
+                  .map((b: any) => b.text)
+                  .join('\n')
+              : ''
+          if (!text) continue
+          const sanitized = sanitizeUserInput(text, 'zcode')
+          if (!sanitized || seenUserText.has(sanitized)) continue
+          seenUserText.add(sanitized)
+          results.push({ content: sanitized, source: 'user', timestamp: obj.startedAt || timestamp })
+        }
+      }
+
+      const responseText = obj.response?.text
+      if (typeof responseText === 'string' && responseText.length >= 20) {
+        for (const block of extractInsightBlocks(responseText)) {
+          results.push({ content: block, source: 'transcript', timestamp })
+        }
+      }
+    } catch {
+      // Ignore malformed or partial lines.
+    }
+  }
+
+  return results
+}
+
 function collectCandidates(session: SessionRow): CandidateInsight[] {
   if (!session.transcript_path || !existsSync(session.transcript_path)) return []
-  return session.source === 'codex'
-    ? collectCodexInsights(session.transcript_path)
-    : collectClaudeInsights(session.transcript_path)
+  if (session.source === 'codex') return collectCodexInsights(session.transcript_path)
+  if (session.source === 'zcode') return collectZcodeInsights(session.transcript_path)
+  return collectClaudeInsights(session.transcript_path)
 }
 
 type ChainSessionRow = {

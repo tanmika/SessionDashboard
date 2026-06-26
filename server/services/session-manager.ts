@@ -12,6 +12,7 @@ import type {
 import { IDLE_THRESHOLD_MS, CODEX_ENDED_THRESHOLD_MS, STATE_PRIORITY } from '../../shared/types.js'
 import { TranscriptWatcher } from './transcript-watcher.js'
 import { CodexWatcher, CODEX_SESSIONS_DIR, readCodexSessionMetadata } from './codex-watcher.js'
+import { ZcodeWatcher, ZCODE_ROLLOUT_DIR } from './zcode-watcher.js'
 import { generateChainId } from '../../shared/chain-id.js'
 
 // Events that signal real progress (can clear waiting state)
@@ -32,6 +33,7 @@ export class SessionManager {
   private idleTimer: ReturnType<typeof setInterval> | null = null
   private transcriptWatcher: TranscriptWatcher
   private codexWatcher: CodexWatcher | null = null
+  private zcodeWatcher: ZcodeWatcher | null = null
 
   // Prepared statements
   private stmtInsertSession: Database.Statement
@@ -120,6 +122,7 @@ export class SessionManager {
     this.restoreFromDb()
     this.startIdleChecker()
     this.initCodexWatcher()
+    this.initZcodeWatcher()
   }
 
   private static readonly INSIGHT_PAGE_SIZE = 100
@@ -178,7 +181,7 @@ export class SessionManager {
         created_at: row.created_at,
         alias: row.alias || '',
         pinned: row.pinned === 1,
-        source: (row.source as 'claude' | 'codex') ?? 'claude',
+        source: (row.source as 'claude' | 'codex' | 'zcode') ?? 'claude',
         is_subagent: restoredThreadMeta.isSubagent,
         parent_session_id: restoredThreadMeta.parentSessionId,
         predecessor_id: row.predecessor_id || undefined,
@@ -225,6 +228,35 @@ export class SessionManager {
     })
 
     this.codexWatcher.start()
+  }
+
+  // ─── ZCode Watcher initialization ───
+
+  private initZcodeWatcher() {
+    if (!existsSync(ZCODE_ROLLOUT_DIR)) {
+      console.log('[session-manager] ~/.zcode/cli/rollout/ not found, ZCode monitoring disabled')
+      return
+    }
+
+    this.zcodeWatcher = new ZcodeWatcher({
+      onSessionDiscovered: (sessionId, cwd, displayName, rolloutPath, timestamp, metadata) => {
+        this.handleZcodeSessionDiscovered(sessionId, cwd, displayName, rolloutPath, timestamp, metadata)
+      },
+      onStateChange: (sessionId, newState, timestamp) => {
+        this.handleZcodeStateChange(sessionId, newState, timestamp)
+      },
+      onInsight: (sessionId, content, timestamp) => {
+        this.addInsight(sessionId, content, 'transcript', timestamp)
+      },
+      onUserInput: (sessionId, content, timestamp) => {
+        this.addInsight(sessionId, content, 'user', timestamp)
+      },
+      onEvent: (sessionId, eventName, timestamp, rawPayload) => {
+        this.handleZcodeEvent(sessionId, eventName, timestamp, rawPayload)
+      },
+    })
+
+    this.zcodeWatcher.start()
   }
 
   // ─── Codex callback handlers ───
@@ -308,6 +340,89 @@ export class SessionManager {
 
     // User/agent messages are concrete Codex activity signals and should refresh session liveness.
     if ((eventName === 'user_message' || eventName === 'agent_message') && this.isTimestampAtLeast(timestamp, session.last_activity)) {
+      session.state = 'active'
+      session.last_activity = timestamp
+      this.persistAndBroadcast(session)
+    }
+  }
+
+  // ─── ZCode callback handlers (passive discovery, mirrors Codex) ───
+
+  private handleZcodeSessionDiscovered(
+    sessionId: string,
+    cwd: string,
+    displayName: string,
+    rolloutPath: string,
+    timestamp: string,
+    metadata: { isSubagent: boolean, parentSessionId?: string }
+  ) {
+    const existing = this.sessions.get(sessionId)
+    if (existing) {
+      let changed = false
+
+      if (metadata.isSubagent && !existing.is_subagent) {
+        existing.is_subagent = true
+        changed = true
+      }
+      if (metadata.parentSessionId && existing.parent_session_id !== metadata.parentSessionId) {
+        existing.parent_session_id = metadata.parentSessionId
+        changed = true
+
+        // On late-promotion to subagent, also inherit the parent's chain_id.
+        const parentChainId = this.sessions.get(metadata.parentSessionId)?.chain_id
+          || this.getChainIdForSession(metadata.parentSessionId)
+        if (parentChainId && parentChainId !== existing.chain_id) {
+          existing.chain_id = parentChainId
+          this.stmtSetChainId.run(parentChainId, existing.session_id)
+        }
+      }
+      if (displayName && existing.alias !== displayName) {
+        existing.alias = displayName
+        existing.display_name = this.makeDisplayName(existing.cwd, sessionId, displayName)
+        this.stmtSetAlias.run(displayName, sessionId)
+        changed = true
+      }
+
+      if (changed) this.persistAndBroadcast(existing)
+      return
+    }
+
+    const session = this.createSession(sessionId, cwd, rolloutPath, timestamp, 'zcode', metadata)
+
+    // Use the zcode session title as alias when available
+    if (displayName) {
+      session.alias = displayName
+      session.display_name = this.makeDisplayName(cwd, sessionId, displayName)
+      this.stmtSetAlias.run(displayName, sessionId)
+    }
+  }
+
+  private handleZcodeStateChange(sessionId: string, newState: 'active' | 'inactive', timestamp: string) {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+
+    if (!this.isTimestampAtLeast(timestamp, session.last_activity)) return
+    session.state = newState
+    session.last_activity = timestamp
+    this.persistAndBroadcast(session)
+  }
+
+  private handleZcodeEvent(sessionId: string, eventName: string, timestamp: string, rawPayload: string) {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+
+    if (!this.insertEventIfNew(
+      sessionId,
+      eventName,
+      null, // notification_type
+      null, // tool_name
+      null, // subagent_id
+      timestamp,
+      rawPayload
+    )) return
+
+    // task_started/task_complete are ZCode activity signals — refresh liveness on start.
+    if (eventName === 'task_started' && this.isTimestampAtLeast(timestamp, session.last_activity)) {
       session.state = 'active'
       session.last_activity = timestamp
       this.persistAndBroadcast(session)
@@ -525,8 +640,8 @@ export class SessionManager {
           continue
         }
 
-        // idle → ended (after CODEX_ENDED_THRESHOLD_MS, Codex only)
-        if (session.state === 'idle' && session.source === 'codex' && elapsed >= CODEX_ENDED_THRESHOLD_MS) {
+        // idle → ended (after CODEX_ENDED_THRESHOLD_MS, Codex/ZCode — both lack a SessionEnd event)
+        if (session.state === 'idle' && (session.source === 'codex' || session.source === 'zcode') && elapsed >= CODEX_ENDED_THRESHOLD_MS) {
           session.state = 'ended'
           this.persistAndBroadcast(session)
         }
@@ -661,7 +776,7 @@ export class SessionManager {
     cwd: string,
     transcriptPath: string | undefined,
     timestamp: string,
-    source: 'claude' | 'codex' = 'claude',
+    source: 'claude' | 'codex' | 'zcode' = 'claude',
     metadata?: { isSubagent?: boolean, parentSessionId?: string }
   ): Session {
     const chainId = this.resolveInitialChainId(metadata)
@@ -775,7 +890,7 @@ export class SessionManager {
 
   // ─── Session handoff (context-clear auto-inheritance) ───
 
-  private findPredecessor(cwd: string, timestamp: string, source: 'claude' | 'codex'): Session | null {
+  private findPredecessor(cwd: string, timestamp: string, source: 'claude' | 'codex' | 'zcode'): Session | null {
     const MAX_GAP_MS = 1_000 // Context-clear handoff is near-instant (< 200ms in practice)
     const now = new Date(timestamp).getTime()
     let best: Session | null = null
@@ -852,5 +967,6 @@ export class SessionManager {
     if (this.idleTimer) clearInterval(this.idleTimer)
     this.transcriptWatcher.unwatchAll()
     this.codexWatcher?.stop()
+    this.zcodeWatcher?.stop()
   }
 }

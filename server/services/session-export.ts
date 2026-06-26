@@ -20,7 +20,7 @@ interface SessionRow {
   created_at: string
   alias: string
   pinned: number
-  source: 'claude' | 'codex'
+  source: 'claude' | 'codex' | 'zcode'
   predecessor_id: string
   is_subagent?: number
 }
@@ -31,7 +31,7 @@ export interface ExportSession {
   cwd: string
   transcript_path: string
   created_at: string
-  source: 'claude' | 'codex'
+  source: 'claude' | 'codex' | 'zcode'
   predecessor_id?: string
   is_subagent?: boolean
 }
@@ -363,6 +363,72 @@ function parseCodexConversation(session: ExportSession, raw: string): SessionExp
   ))
 }
 
+// zcode rollout record content mirrors the Anthropic format: a plain string
+// or an array of { type:'text', text } blocks.
+function extractZcodeMessageText(content: unknown): string {
+  if (typeof content === 'string') return content.trim()
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((block): block is { type?: string, text?: string } => typeof block === 'object' && block !== null)
+    .filter((block) => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text!.trim())
+    .filter(Boolean)
+    .join('\n\n')
+    .trim()
+}
+
+// zcode's transcript is its rollout JSONL (one complete request/response per line).
+// request.messages carries the FULL history on each request, so we dedup user
+// text by content to avoid repeating earlier prompts.
+function parseZcodeConversation(session: ExportSession, raw: string): SessionExportMessage[] {
+  const messages: SessionExportMessage[] = []
+  const seenUserText = new Set<string>()
+
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    let record: any
+    try {
+      record = JSON.parse(trimmed)
+    } catch {
+      continue
+    }
+
+    const messagesIn = record.request?.messages
+    if (Array.isArray(messagesIn)) {
+      for (const msg of messagesIn) {
+        if (msg?.role !== 'user') continue
+        const text = extractZcodeMessageText(msg.content)
+        if (!text || isConversationControlText(text)) continue
+        if (seenUserText.has(text)) continue
+        seenUserText.add(text)
+        messages.push({
+          session_id: session.session_id,
+          timestamp: record.startedAt || record.completedAt || session.created_at,
+          role: 'user',
+          text,
+        })
+      }
+    }
+
+    const responseText = extractZcodeMessageText(record.response?.text)
+    if (responseText) {
+      messages.push({
+        session_id: session.session_id,
+        timestamp: record.completedAt || record.startedAt || session.created_at,
+        role: 'agent',
+        text: responseText,
+      })
+    }
+  }
+
+  return messages.sort((a, b) => (
+    a.timestamp.localeCompare(b.timestamp) ||
+    (a.role === b.role ? 0 : a.role === 'user' ? -1 : 1)
+  ))
+}
+
 function pushTranscriptRecord(records: SessionTranscriptRecord[], record: SessionTranscriptRecord) {
   const text = record.text.trim()
   if (!text) return
@@ -603,6 +669,85 @@ function parseCodexTranscriptRecords(session: ExportSession, raw: string): Sessi
   return records
 }
 
+// zcode tool calls are serialized compactly; args may be string or object.
+function formatZcodeToolRecord(toolName: unknown, args: unknown): string {
+  const name = typeof toolName === 'string' && toolName ? toolName : 'tool'
+  let argsText: string
+  if (typeof args === 'string') {
+    argsText = args
+  } else if (args !== undefined && args !== null) {
+    try {
+      argsText = JSON.stringify(args)
+    } catch {
+      argsText = String(args)
+    }
+  } else {
+    argsText = ''
+  }
+  if (argsText.length > 2000) argsText = argsText.slice(0, 2000) + ' [truncated]'
+  return argsText ? `tool: ${name}\n${argsText}` : `tool: ${name}`
+}
+
+function parseZcodeTranscriptRecords(session: ExportSession, raw: string): SessionTranscriptRecord[] {
+  const records: SessionTranscriptRecord[] = []
+  const seenUserText = new Set<string>()
+
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    let record: any
+    try {
+      record = JSON.parse(trimmed)
+    } catch {
+      continue
+    }
+
+    const timestamp = record.completedAt || record.startedAt || session.created_at
+
+    const messagesIn = record.request?.messages
+    if (Array.isArray(messagesIn)) {
+      for (const msg of messagesIn) {
+        if (msg?.role !== 'user') continue
+        const text = extractZcodeMessageText(msg.content)
+        if (!text || isConversationControlText(text)) continue
+        if (seenUserText.has(text)) continue
+        seenUserText.add(text)
+        pushTranscriptRecord(records, {
+          session_id: session.session_id,
+          timestamp: record.startedAt || timestamp,
+          role: 'user',
+          text,
+        })
+      }
+    }
+
+    const responseText = extractZcodeMessageText(record.response?.text)
+    if (responseText) {
+      pushTranscriptRecord(records, {
+        session_id: session.session_id,
+        timestamp,
+        role: 'agent',
+        text: responseText,
+      })
+    }
+
+    const toolCalls = record.response?.toolCalls
+    if (Array.isArray(toolCalls)) {
+      for (const call of toolCalls) {
+        pushTranscriptRecord(records, {
+          session_id: session.session_id,
+          timestamp,
+          role: 'tool',
+          text: formatZcodeToolRecord(call?.toolName, call?.args),
+        })
+      }
+    }
+  }
+
+  return records
+}
+
 export function readSessionTranscriptRecords(session: ExportSession): {
   ok: true
   records: SessionTranscriptRecord[]
@@ -626,7 +771,9 @@ export function readSessionTranscriptRecords(session: ExportSession): {
     ok: true,
     records: session.source === 'claude'
       ? parseClaudeTranscriptRecords(session, transcript.content)
-      : parseCodexTranscriptRecords(session, transcript.content),
+      : session.source === 'zcode'
+        ? parseZcodeTranscriptRecords(session, transcript.content)
+        : parseCodexTranscriptRecords(session, transcript.content),
   }
 }
 
@@ -833,7 +980,9 @@ export function exportSessionText(db: Database.Database, options: ExportOptions)
       const parsed = (
         session.source === 'claude'
           ? parseClaudeConversation(session, transcript.content)
-          : parseCodexConversation(session, transcript.content)
+          : session.source === 'zcode'
+            ? parseZcodeConversation(session, transcript.content)
+            : parseCodexConversation(session, transcript.content)
       )
       messages.push(...parsed.filter((message) => isInTimeRange(message.timestamp, range)))
     }

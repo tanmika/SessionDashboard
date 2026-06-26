@@ -64,7 +64,7 @@ export interface HookEventPayload {
   transcript_path?: string
   cwd?: string
   hook_event_name: HookEventName
-  dashboard_source?: 'claude' | 'codex'
+  dashboard_source?: 'claude' | 'codex' | 'zcode'
   // SessionStart: how the session was initiated
   matcher?: SessionStartMatcher
   // Notification sub-type
@@ -123,7 +123,7 @@ export interface Session {
   // Watchlist pin (persisted in DB)
   pinned: boolean
   // Session source
-  source: 'claude' | 'codex'
+  source: 'claude' | 'codex' | 'zcode'
   // Codex subagent thread metadata
   is_subagent: boolean
   parent_session_id?: string
@@ -176,7 +176,7 @@ export interface SessionTranscriptRecord {
 export interface SessionExportMissingSession {
   session_id: string
   display_name: string
-  source: 'claude' | 'codex'
+  source: 'claude' | 'codex' | 'zcode'
   transcript_path?: string
   reason: string
 }
@@ -201,7 +201,7 @@ export interface SessionExportFailure {
   matching_sessions?: Array<{
     session_id: string
     display_name: string
-    source: 'claude' | 'codex'
+    source: 'claude' | 'codex' | 'zcode'
   }>
 }
 

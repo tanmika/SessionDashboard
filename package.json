@@ -25,6 +25,7 @@
     "preview": "vite preview",
     "setup:hooks": "tsx scripts/setup-hooks.ts",
     "setup:codex": "tsx scripts/setup-codex.ts",
+    "setup:zcode": "tsx scripts/setup-zcode.ts",
     "insights": "tsx scripts/read-insights.ts",
     "repair:recent": "tsx scripts/repair-dashboard.ts --days 7"
   },

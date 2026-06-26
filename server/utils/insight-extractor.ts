@@ -70,7 +70,7 @@ export function contentHash(content: string): string {
 // ─── User input filtering (shared by transcript-watcher and codex-watcher) ───
 
 export const MAX_USER_INPUT_LENGTH = 2000
-export type UserInputSource = 'claude' | 'codex' | 'unknown'
+export type UserInputSource = 'claude' | 'codex' | 'zcode' | 'unknown'
 
 /** Patterns that indicate system-generated content, not real user input */
 const USER_INPUT_NOISE_PATTERNS = [
@@ -181,7 +181,7 @@ export function isUserInputNoise(text: string, source: UserInputSource = 'unknow
   const phraseMatches = countSystemPhraseMatches(text)
   const lineCount = text.split('\n').filter(line => line.trim()).length
   if (phraseMatches >= 3 && lineCount >= 3) return true
-  if ((source === 'claude' || source === 'codex') && phraseMatches >= 2 && hasSystemBlockStructure(text)) {
+  if ((source === 'claude' || source === 'codex' || source === 'zcode') && phraseMatches >= 2 && hasSystemBlockStructure(text)) {
     return true
   }
 

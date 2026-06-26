@@ -346,7 +346,7 @@ watch(
           </div>
           <div class="info-item">
             <span class="info-label">Source</span>
-            <span class="info-value">{{ store.selectedSession.source === 'codex' ? 'Codex CLI' : 'Claude Code' }}</span>
+            <span class="info-value">{{ store.selectedSession.source === 'codex' ? 'Codex CLI' : store.selectedSession.source === 'zcode' ? 'ZCode CLI' : 'Claude Code' }}</span>
           </div>
           <div class="info-item">
             <span class="info-label">Kind</span>

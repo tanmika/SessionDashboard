@@ -38,6 +38,7 @@ await build({
   entryPoints: [
     'scripts/setup-hooks.ts',
     'scripts/setup-codex.ts',
+    'scripts/setup-zcode.ts',
     'scripts/read-insights.ts',
     'scripts/cut-records.ts',
     'scripts/export-session.ts',

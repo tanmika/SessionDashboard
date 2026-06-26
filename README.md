@@ -4,19 +4,19 @@
 
 # Session Dashboard
 
-A real-time observation dashboard for **Claude Code** and **Codex CLI** sessions. Each session occupies a dedicated column displaying its current state and insights in reverse chronological order, with local event persistence so the view survives page refreshes and runtime restarts.
+A real-time observation dashboard for **Claude Code**, **Codex CLI**, and **ZCode** sessions. Each session occupies a dedicated column displaying its current state and insights in reverse chronological order, with local event persistence so the view survives page refreshes and runtime restarts.
 
 ![Session Dashboard](https://img.shields.io/badge/stack-Vue%203%20%2B%20Node.js-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 ## Features
 
-- **Multi-tool support** — monitors both Claude Code (via HTTP hooks) and Codex CLI (via filesystem watching) on a unified board
+- **Multi-tool support** — monitors Claude Code (via HTTP hooks), Codex CLI, and ZCode (both via filesystem watching) on a unified board
 - **Session Watchlist** — manually pin sessions to the board; only pinned sessions appear as columns (persisted across restarts, synced in real-time across browser tabs)
 - **Session Alias** — give any session a custom name for persistent identification; inline edit on the column header or in the detail panel; alias overrides the auto-generated `basename · id` name
 - **Multi-column kanban view** — each pinned session gets its own column
 - **6 session states** — Active, Waiting Permission, Waiting User, Inactive, Idle, Ended
-- **Source badge** — each column displays a Claude (blue) or Codex (green) badge
+- **Source badge** — each column displays a Claude (blue), Codex (green), or ZCode (purple) badge
 - **Real-time updates** — WebSocket push; reconnects automatically
 - **Dual insight sources** — Claude Code hooks events + incremental transcript / rollout parsing
 - **Persistent storage** — SQLite (WAL mode); survives page close, refresh, and runtime restart
@@ -37,6 +37,7 @@ A real-time observation dashboard for **Claude Code** and **Codex CLI** sessions
 - Node.js ≥ 18
 - Claude Code with hooks support (for Claude Code monitoring)
 - Codex CLI (for Codex monitoring; optional — dashboard works without it)
+- ZCode (for ZCode monitoring; optional — dashboard works without it)
 - `jq` (optional, but recommended — used by the hook script to strip large payloads)
 
 ## Getting Started
@@ -84,6 +85,16 @@ This injects `★ Insight` output-style instructions into `~/.codex/AGENTS.md` s
 
 > If `~/.codex/sessions/` does not exist, the dashboard silently skips Codex monitoring — no errors.
 
+### 6. Set up ZCode insight injection (optional)
+
+```bash
+npm run setup:zcode
+```
+
+This injects `★ Insight` output-style instructions into the **project-level** `AGENTS.md` (ZCode's project-instruction file, same convention as Codex). It uses `<---session-dashboard-zcode-insight--->` marker tags for idempotent dedup and in-place update; a `.bak` backup is created before any change.
+
+> If `~/.zcode/cli/` does not exist, the dashboard silently skips ZCode monitoring — no errors. ZCode is a **passive** source like Codex: the dashboard watches `~/.zcode/cli/rollout/` and enriches session metadata (cwd, parent links, title) from `~/.zcode/cli/db/db.sqlite`.
+
 ## Development
 
 Start the backend and frontend in watch mode simultaneously:
@@ -118,18 +129,19 @@ SESSION_DASHBOARD_PORT=4000 SESSION_DASHBOARD_URL=http://localhost:4000 node lib
 ## How It Works
 
 ```
-Claude Code session                Codex CLI session
-      │                                   │
-      │  hooks (HTTP POST)                │  fs.watch (rollout JSONL)
-      ▼                                   ▼
-hook script                         CodexWatcher
-(hooks/session-hook.sh)             (server/services/codex-watcher.ts)
-      │  POST /api/events                 │  callbacks
-      ▼                                   ▼
-              SessionManager (server/services/session-manager.ts)
+Claude Code session                Codex CLI session          ZCode session
+      │                                   │                          │
+      │  hooks (HTTP POST)                │  fs.watch (rollout JSONL) │  fs.watch (rollout JSONL)
+      ▼                                   ▼                          ▼
+hook script                         CodexWatcher               ZcodeWatcher
+(hooks/session-hook.sh)             (server/services/          (server/services/
+      │  POST /api/events               codex-watcher.ts)          zcode-watcher.ts)
+      ▼                                   │  callbacks               │  callbacks
+              SessionManager (server/services/session-manager.ts) ◄──┘
                 ├── SQLite  ─────────────────── persist events & insights
                 ├── TranscriptWatcher ───────── watch Claude transcript JSONL
                 ├── CodexWatcher ────────────── watch ~/.codex/sessions/ rollouts
+                ├── ZcodeWatcher ────────────── watch ~/.zcode/cli/rollout/ + read zcode DB metadata
                 │       └── shared insight-extractor (★ Insight blocks only)
                 └── WebSocket broadcast
                         │
@@ -140,6 +152,7 @@ hook script                         CodexWatcher
 **Architecture difference:**
 - **Claude Code** = active push (hooks → HTTP POST → server)
 - **Codex CLI** = passive discovery (fs.watch rollout directory → incremental JSONL parsing)
+- **ZCode** = passive discovery (fs.watch `~/.zcode/cli/rollout/` → incremental JSONL parsing; session metadata and parent/subagent links enriched from `~/.zcode/cli/db/db.sqlite`)
 
 **Insight extraction** only persists explicit `★ Insight` blocks (shared by both sources).
 1. Regex match for `` `★ Insight ───` `` blocks (explanatory mode)
@@ -153,9 +166,9 @@ MD5 hashing prevents duplicate insights across incremental file reads.
 | `Active` | Tool executing, subagent running, or recent progress | Both |
 | `Waiting Permission` | `PermissionRequest` / `Notification(permission_prompt)` | Claude only |
 | `Waiting User` | `Notification(elicitation_dialog \| idle_prompt)` | Claude only |
-| `Inactive` | `task_complete` — turn finished, awaiting next user input | Codex only |
-| `Idle` | No progress for 3 min (`IDLE_THRESHOLD_MS`) | Both |
-| `Ended` | `SessionEnd` (Claude) or idle 30 min (`CODEX_ENDED_THRESHOLD_MS`, Codex) | Both |
+| `Inactive` | `task_complete` — turn finished, awaiting next user input | Codex/ZCode |
+| `Idle` | No progress for 3 min (`IDLE_THRESHOLD_MS`) | All |
+| `Ended` | `SessionEnd` (Claude) or idle 30 min (`CODEX_ENDED_THRESHOLD_MS`, Codex/ZCode) | All |
 
 Column sort order: **Waiting Permission → Waiting User → Active → Inactive → Idle → Ended**
 
@@ -168,6 +181,7 @@ session-dashboard/
 ├── scripts/
 │   ├── setup-hooks.ts        # Hook installer (npm run setup:hooks)
 │   ├── setup-codex.ts        # Codex insight injection (npm run setup:codex)
+│   ├── setup-zcode.ts        # ZCode insight injection (npm run setup:zcode)
 │   └── dev-simulate.sh       # Simulation script for development
 ├── server/
 │   ├── db.ts                 # SQLite init + safe column migrations
@@ -178,7 +192,8 @@ session-dashboard/
 │   ├── services/
 │   │   ├── session-manager.ts    # State machine + insight + pin/alias management
 │   │   ├── transcript-watcher.ts # Claude transcript incremental JSONL parsing
-│   │   └── codex-watcher.ts      # Codex rollout directory monitoring + JSONL parsing
+│   │   ├── codex-watcher.ts      # Codex rollout directory monitoring + JSONL parsing
+│   │   └── zcode-watcher.ts      # ZCode rollout monitoring + JSONL parsing + DB metadata
 │   ├── utils/
 │   │   └── insight-extractor.ts  # Shared insight extraction (★ blocks only)
 │   └── ws.ts                 # WebSocket server

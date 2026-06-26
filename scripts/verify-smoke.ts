@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { applySchema } from '../server/db.js'
 import { SessionManager } from '../server/services/session-manager.js'
-import { exportSessionText } from '../server/services/session-export.js'
+import { exportSessionText, readSessionTranscriptRecords } from '../server/services/session-export.js'
 import { TranscriptWatcher } from '../server/services/transcript-watcher.js'
 import { extractInsightBlocks, sanitizeUserInput } from '../server/utils/insight-extractor.js'
 import { generateChainId, isChainId } from '../shared/chain-id.js'
@@ -183,7 +183,7 @@ function insertSession(
   options: {
     cwd: string
     transcriptPath: string
-    source: 'claude' | 'codex'
+    source: 'claude' | 'codex' | 'zcode'
     predecessorId?: string
     chainId?: string
     isSubagent?: boolean
@@ -1691,6 +1691,57 @@ function verifySessionExport(tempRoot: string) {
     })
     assert(!loopConversation.ok)
     assert.equal(loopConversation.error.error, 'invalid_chain')
+
+    // ── ZCode session export (request/response rollout JSONL) ──
+    const zcodeTranscript = join(transcriptDir, 'zcode.jsonl')
+    writeFileSync(zcodeTranscript, [
+      // request.messages accumulates history; the second record repeats the
+      // first user prompt — dedup must keep it to a single user turn.
+      JSON.stringify({
+        sessionId: 'zcode-session',
+        startedAt: '2026-03-17T11:00:00.000Z',
+        completedAt: '2026-03-17T11:00:05.000Z',
+        request: { messages: [{ role: 'user', content: 'zcode user prompt' }] },
+        response: { text: 'zcode agent reply' },
+      }),
+      JSON.stringify({
+        sessionId: 'zcode-session',
+        startedAt: '2026-03-17T11:00:06.000Z',
+        completedAt: '2026-03-17T11:00:10.000Z',
+        request: { messages: [{ role: 'user', content: 'zcode user prompt' }] },
+        response: {
+          text: 'zcode follow-up',
+          toolCalls: [{ toolName: 'Read', args: { file_path: '/tmp/x' } }],
+        },
+      }),
+      '',
+    ].join('\n'))
+    insertSession(db, 'zcode-session', {
+      cwd: '/tmp/zcode',
+      transcriptPath: zcodeTranscript,
+      source: 'zcode',
+    })
+    const zcodeConversation = exportSessionText(db, {
+      sessionId: 'zcode-session',
+      mode: 'conversation',
+      depth: 0,
+    })
+    assert(zcodeConversation.ok, `zcode conversation export should succeed, got: ${JSON.stringify(zcodeConversation)}`)
+    assert(zcodeConversation.data.content.includes('zcode user prompt'),
+      `zcode export should include user prompt, got: ${zcodeConversation.data.content.slice(0, 400)}`)
+    assert(zcodeConversation.data.content.includes('zcode agent reply'),
+      `zcode export should include agent reply`)
+    assert(zcodeConversation.data.content.includes('zcode follow-up'),
+      `zcode export should include second agent reply`)
+
+    const zcodeRecords = readSessionTranscriptRecords({
+      session_id: 'zcode-session', display_name: 'zcode', cwd: '/tmp/zcode',
+      transcript_path: zcodeTranscript, created_at: '2026-03-17T11:00:00.000Z',
+      source: 'zcode',
+    })
+    assert(zcodeRecords.ok, `zcode transcript records should parse, got: ${JSON.stringify(zcodeRecords)}`)
+    assert(zcodeRecords.records.some((r) => r.role === 'tool' && r.text.includes('Read')),
+      `zcode records should include the tool call, got: ${JSON.stringify(zcodeRecords.records)}`)
   } finally {
     db.close()
   }
@@ -2586,6 +2637,27 @@ function verifyRepairScript(tempRoot: string) {
     source: 'codex',
   })
 
+  // ZCode repair fixture: rollout is request/response JSONL; the insight lives
+  // in response.text. repair-dashboard must parse it like Codex.
+  const zcodeRepairRollout = join(rolloutDir, 'zcode-repair.jsonl')
+  writeFileSync(zcodeRepairRollout, [
+    JSON.stringify({
+      sessionId: 'repair-zcode',
+      startedAt: '2026-03-20T12:00:00.000Z',
+      completedAt: '2026-03-20T12:00:05.000Z',
+      request: { messages: [{ role: 'user', content: 'zcode repair prompt' }] },
+      response: { text: makeFencedInsightBlock('zcode-repair-backfill') },
+    }),
+    '',
+  ].join('\n'))
+  insertSession(db, 'repair-zcode', {
+    cwd: '/tmp/repair-zcode',
+    transcriptPath: zcodeRepairRollout,
+    source: 'zcode',
+  })
+  db.prepare('UPDATE sessions SET created_at = ?, last_activity = ?, state = ? WHERE session_id = ?')
+    .run('2026-03-20T12:00:00.000Z', '2026-03-20T12:00:00.000Z', 'ended', 'repair-zcode')
+
   db.prepare('UPDATE sessions SET created_at = ?, last_activity = ?, state = ? WHERE session_id = ?')
     .run('2026-03-20T09:50:00.000Z', '2026-03-20T09:50:00.000Z', 'ended', 'repair-missing')
   db.prepare('UPDATE sessions SET created_at = ?, last_activity = ?, state = ? WHERE session_id = ?')
@@ -2635,6 +2707,11 @@ function verifyRepairScript(tempRoot: string) {
       'SELECT COUNT(*) as count FROM insights WHERE session_id = ? AND source = ? AND content = ?'
     ).get('repair-missing', 'transcript', '- repair-backfill') as { count: number }
     assert.equal(backfilledInsights.count, 1)
+
+    const backfilledZcodeInsights = repairedDb.prepare(
+      'SELECT COUNT(*) as count FROM insights WHERE session_id = ? AND source = ? AND content = ?'
+    ).get('repair-zcode', 'transcript', '- zcode-repair-backfill') as { count: number }
+    assert.equal(backfilledZcodeInsights.count, 1, 'repair script did not backfill ZCode rollout insights')
 
     const deletedNoise = repairedDb.prepare(
       'SELECT COUNT(*) as count FROM insights WHERE session_id = ? AND source = ? AND content LIKE ?'

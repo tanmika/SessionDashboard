@@ -204,7 +204,7 @@ const flatItems = computed<FlatItem[]>(() => {
           @mouseleave="cancelHover"
         >
           <span class="tree-dot" :style="{ background: stateColor(item.session!.state) }"></span>
-          <span class="src-badge" :class="item.session!.source">{{ item.session!.source === 'codex' ? 'Codex' : 'Claude' }}</span>
+          <span class="src-badge" :class="item.session!.source">{{ item.session!.source === 'codex' ? 'Codex' : item.session!.source === 'zcode' ? 'ZCode' : 'Claude' }}</span>
           <span v-if="item.session!.is_subagent" class="kind-badge">子代理</span>
           <div class="tree-session-info">
             <span class="tree-session-name">{{ item.session!.alias || item.session!.session_id.slice(0, 8) }}</span>
@@ -238,7 +238,7 @@ const flatItems = computed<FlatItem[]>(() => {
         <div class="hp-header">
           <div class="hp-title">
             <span>{{ hoverSession.display_name }}</span>
-            <span class="src-badge" :class="hoverSession.source">{{ hoverSession.source === 'codex' ? 'Codex' : 'Claude' }}</span>
+            <span class="src-badge" :class="hoverSession.source">{{ hoverSession.source === 'codex' ? 'Codex' : hoverSession.source === 'zcode' ? 'ZCode' : 'Claude' }}</span>
             <span v-if="hoverSession.is_subagent" class="kind-badge">子代理</span>
           </div>
           <div class="hp-id">{{ hoverSession.session_id.slice(0, 12) }}</div>
@@ -503,6 +503,7 @@ const flatItems = computed<FlatItem[]>(() => {
 }
 .src-badge.claude { background: rgba(96,165,250,0.15); color: #93c5fd; }
 .src-badge.codex { background: rgba(74,222,128,0.15); color: #86efac; }
+.src-badge.zcode { background: rgba(192,132,252,0.15); color: #d8b4fe; }
 
 .kind-badge {
   font-size: 9px;

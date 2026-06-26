@@ -93,7 +93,7 @@ const relativeTime = computed(() => {
           <div class="column-subtitle">{{ session.session_id.slice(0, 8) }}</div>
         </div>
         <div class="badges">
-          <span class="source-badge" :class="session.source">{{ session.source === 'codex' ? 'Codex' : 'Claude' }}</span>
+          <span class="source-badge" :class="session.source">{{ session.source === 'codex' ? 'Codex' : session.source === 'zcode' ? 'ZCode' : 'Claude' }}</span>
           <span v-if="session.is_subagent" class="kind-badge">子代理</span>
           <span class="status" :class="stateClass">{{ stateLabel }}</span>
           <button class="unpin-btn" @click.stop="store.setPinned(session.session_id, false)" title="从看板移除">×</button>
@@ -306,6 +306,12 @@ const relativeTime = computed(() => {
   background: rgba(74, 222, 128, 0.14);
   color: #86efac;
   border: 1px solid rgba(74, 222, 128, 0.25);
+}
+
+.source-badge.zcode {
+  background: rgba(192, 132, 252, 0.14);
+  color: #d8b4fe;
+  border: 1px solid rgba(192, 132, 252, 0.25);
 }
 
 /* Status badges */

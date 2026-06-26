@@ -176,7 +176,11 @@ async function cmdInit() {
   const { setupCodex } = await import('../scripts/setup-codex.js')
   setupCodex()
 
-  // 4. Inject insight recovery instructions into ~/.claude/CLAUDE.md
+  // 5. Setup zcode insight instructions (non-fatal if ~/.zcode doesn't exist)
+  const { setupZcode } = await import('../scripts/setup-zcode.js')
+  setupZcode()
+
+  // 6. Inject insight recovery instructions into ~/.claude/CLAUDE.md
   setupClaudeMd()
 
   // 5. Install login-time service on macOS
